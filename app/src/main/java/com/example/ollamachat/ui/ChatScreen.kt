@@ -3,6 +3,8 @@ package com.example.ollamachat.ui
 import android.content.ClipData
 import android.content.ClipboardManager
 import android.content.Context
+import android.graphics.Bitmap
+import android.graphics.BitmapFactory
 import android.net.Uri
 import android.net.wifi.WifiManager
 import android.provider.OpenableColumns
@@ -10,6 +12,7 @@ import android.speech.tts.TextToSpeech
 import android.speech.tts.Voice
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -42,10 +45,13 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.Send
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.ArrowDropDown
+import androidx.compose.material.icons.filled.Bolt
+import androidx.compose.material.icons.filled.CameraAlt
 import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.ContentCopy
 import androidx.compose.material.icons.filled.Delete
+import androidx.compose.material.icons.filled.Description
 import androidx.compose.material.icons.filled.History
 import androidx.compose.material.icons.filled.Image
 import androidx.compose.material.icons.filled.Refresh
@@ -56,6 +62,7 @@ import androidx.compose.material.icons.filled.VolumeUp
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
+import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.ExperimentalMaterial3Api
@@ -89,13 +96,18 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.asImageBitmap
+import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import androidx.core.content.FileProvider
 import java.io.BufferedReader
+import java.io.ByteArrayOutputStream
+import java.io.File
 import java.io.InputStreamReader
 import java.io.OutputStreamWriter
 import java.net.HttpURLConnection
@@ -107,6 +119,7 @@ import java.util.UUID
 import java.util.concurrent.Executors
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import org.json.JSONArray
@@ -116,11 +129,22 @@ private val Terracotta = Color(0xFFD97757)
 private val WarmPeach = Color(0xFFE08E6D)
 private val SkyBlue = Color(0xFF8AB4F8)
 
+private data class AttachmentPreview(
+    val name: String,
+    val mimeType: String,
+    val isImage: Boolean,
+    val bitmap: Bitmap?,
+    val base64Image: String?,
+    val extractedText: String,
+    val byteCount: Long
+)
+
 private data class ChatEntry(
     val id: String,
     val role: String,
     val content: String,
-    val attachmentLabel: String? = null
+    val attachmentName: String? = null,
+    val isAttachmentImage: Boolean = false
 )
 
 private data class SavedThread(
@@ -131,11 +155,17 @@ private data class SavedThread(
 )
 
 private data class StudioConfig(
-    val hostUrl: String = "http://192.168.1.50:11434",
+    val hostUrl: String = "http://10.0.0.134:11434",
     val cpuCores: Int = 6,
+    val gpuLayers: Int = 99,
     val maxTokens: Int = 1024,
-    val contextSize: Int = 4096,
+    val contextSize: Int = 2048,
+    val temperature: Float = 0.7f,
+    val topP: Float = 0.9f,
+    val keepAlive: String = "15m",
     val conciseDiffMode: Boolean = true,
+    val singleHtmlAppMode: Boolean = false,
+    val lineCheckpointTracker: Boolean = true,
     val speechRate: Float = 1.0f,
     val speechPitch: Float = 1.08f
 )
@@ -143,11 +173,17 @@ private data class StudioConfig(
 private fun loadConfig(context: Context): StudioConfig {
     val prefs = context.getSharedPreferences("studio_prefs", Context.MODE_PRIVATE)
     return StudioConfig(
-        hostUrl = prefs.getString("host_url", "http://192.168.1.50:11434") ?: "http://192.168.1.50:11434",
+        hostUrl = prefs.getString("host_url", "http://10.0.0.134:11434") ?: "http://10.0.0.134:11434",
         cpuCores = prefs.getInt("cpu_cores", 6).coerceIn(1, 32),
-        maxTokens = prefs.getInt("max_tokens", 1024).coerceIn(64, 16384),
-        contextSize = prefs.getInt("context_size", 4096).coerceIn(512, 32768),
+        gpuLayers = prefs.getInt("gpu_layers", 99).coerceIn(0, 200),
+        maxTokens = prefs.getInt("max_tokens", 1024).coerceIn(64, 32768),
+        contextSize = prefs.getInt("context_size", 2048).coerceIn(512, 65536),
+        temperature = prefs.getFloat("temperature", 0.7f).coerceIn(0.0f, 2.0f),
+        topP = prefs.getFloat("top_p", 0.9f).coerceIn(0.1f, 1.0f),
+        keepAlive = prefs.getString("keep_alive", "15m") ?: "15m",
         conciseDiffMode = prefs.getBoolean("concise_diff", true),
+        singleHtmlAppMode = prefs.getBoolean("single_html_app", false),
+        lineCheckpointTracker = prefs.getBoolean("line_checkpoint", true),
         speechRate = prefs.getFloat("speech_rate", 1.0f).coerceIn(0.6f, 1.6f),
         speechPitch = prefs.getFloat("speech_pitch", 1.08f).coerceIn(0.75f, 1.35f)
     )
@@ -157,9 +193,15 @@ private fun saveConfig(context: Context, cfg: StudioConfig) {
     context.getSharedPreferences("studio_prefs", Context.MODE_PRIVATE).edit()
         .putString("host_url", cfg.hostUrl.trim())
         .putInt("cpu_cores", cfg.cpuCores)
+        .putInt("gpu_layers", cfg.gpuLayers)
         .putInt("max_tokens", cfg.maxTokens)
         .putInt("context_size", cfg.contextSize)
+        .putFloat("temperature", cfg.temperature)
+        .putFloat("top_p", cfg.topP)
+        .putString("keep_alive", cfg.keepAlive.trim().ifBlank { "15m" })
         .putBoolean("concise_diff", cfg.conciseDiffMode)
+        .putBoolean("single_html_app", cfg.singleHtmlAppMode)
+        .putBoolean("line_checkpoint", cfg.lineCheckpointTracker)
         .putFloat("speech_rate", cfg.speechRate)
         .putFloat("speech_pitch", cfg.speechPitch)
         .apply()
@@ -182,7 +224,8 @@ private fun loadThreads(context: Context): MutableList<SavedThread> {
                         id = m.optString("id", UUID.randomUUID().toString()),
                         role = m.optString("role", "user"),
                         content = m.optString("content", ""),
-                        attachmentLabel = m.optString("attachment", "").ifBlank { null }
+                        attachmentName = m.optString("attachment_name", "").ifBlank { null },
+                        isAttachmentImage = m.optBoolean("attachment_is_image", false)
                     )
                 )
             }
@@ -212,7 +255,8 @@ private fun persistThreads(context: Context, threads: List<SavedThread>) {
             mo.put("id", m.id)
             mo.put("role", m.role)
             mo.put("content", m.content)
-            mo.put("attachment", m.attachmentLabel ?: "")
+            mo.put("attachment_name", m.attachmentName ?: "")
+            mo.put("attachment_is_image", m.isAttachmentImage)
             msgArr.put(mo)
         }
         obj.put("messages", msgArr)
@@ -238,11 +282,13 @@ private suspend fun fetchModelsFromHost(baseUrl: String): List<String> = withCon
     val url = URL("${normalizeHost(baseUrl)}/api/tags")
     val conn = (url.openConnection() as HttpURLConnection).apply {
         requestMethod = "GET"
-        connectTimeout = 2500
-        readTimeout = 4000
+        connectTimeout = 3000
+        readTimeout = 5000
     }
     try {
-        if (conn.responseCode !in 200..299) return@withContext emptyList()
+        if (conn.responseCode !in 200..299) {
+            error("HTTP ${conn.responseCode} from ${normalizeHost(baseUrl)}")
+        }
         val body = conn.inputStream.bufferedReader().use { it.readText() }
         val json = JSONObject(body)
         val arr = json.optJSONArray("models") ?: JSONArray()
@@ -282,11 +328,9 @@ private suspend fun discoverOllamaOnLan(context: Context, currentHost: String): 
 
         val prefix = wifiSubnetPrefix(context)
         if (prefix != null && prefix != "0.0.0") {
-            for (hostLast in 1..254) {
-                candidates.add("$prefix.$hostLast")
-            }
+            for (hostLast in 1..254) candidates.add("$prefix.$hostLast")
         } else {
-            listOf("192.168.1", "192.168.0", "10.0.0").forEach { p ->
+            listOf("10.0.0", "192.168.1", "192.168.0").forEach { p ->
                 for (hostLast in 1..254) candidates.add("$p.$hostLast")
             }
         }
@@ -332,25 +376,63 @@ private suspend fun discoverOllamaOnLan(context: Context, currentHost: String): 
         foundIp
     }
 
-private fun readAttachmentFromUri(context: Context, uri: Uri): Pair<String, String?> {
+private fun createTempPhotoUri(context: Context): Uri? {
+    return runCatching {
+        val dir = File(context.cacheDir, "captures").apply { mkdirs() }
+        val file = File(dir, "capture_${System.currentTimeMillis()}.jpg")
+        FileProvider.getUriForFile(context, "${context.packageName}.fileprovider", file)
+    }.getOrNull()
+}
+
+private fun inspectAttachment(context: Context, uri: Uri): AttachmentPreview {
     var displayName = "attachment"
-    context.contentResolver.query(uri, arrayOf(OpenableColumns.DISPLAY_NAME), null, null, null)
+    var sizeBytes = 0L
+    context.contentResolver.query(uri, arrayOf(OpenableColumns.DISPLAY_NAME, OpenableColumns.SIZE), null, null, null)
         ?.use { cursor ->
             if (cursor.moveToFirst()) {
-                val idx = cursor.getColumnIndex(OpenableColumns.DISPLAY_NAME)
-                if (idx >= 0) {
-                    val n = cursor.getString(idx)
+                val nameIdx = cursor.getColumnIndex(OpenableColumns.DISPLAY_NAME)
+                val sizeIdx = cursor.getColumnIndex(OpenableColumns.SIZE)
+                if (nameIdx >= 0) {
+                    val n = cursor.getString(nameIdx)
                     if (!n.isNullOrBlank()) displayName = n
+                }
+                if (sizeIdx >= 0 && !cursor.isNull(sizeIdx)) {
+                    sizeBytes = cursor.getLong(sizeIdx)
                 }
             }
         }
 
-    val mime = context.contentResolver.getType(uri) ?: ""
-    if (mime.startsWith("image/")) {
-        return displayName to "[Attached image: $displayName]"
+    val mime = context.contentResolver.getType(uri) ?: "application/octet-stream"
+    val lowerName = displayName.lowercase(Locale.ROOT)
+    val looksImage = mime.startsWith("image/") ||
+        lowerName.endsWith(".png") ||
+        lowerName.endsWith(".jpg") ||
+        lowerName.endsWith(".jpeg") ||
+        lowerName.endsWith(".webp")
+
+    if (looksImage) {
+        val rawBytes = runCatching {
+            context.contentResolver.openInputStream(uri)?.use { it.readBytes() }
+        }.getOrNull()
+        val decoded = rawBytes?.let { BitmapFactory.decodeByteArray(it, 0, it.size) }
+        val base64 = decoded?.let { bmp ->
+            val baos = ByteArrayOutputStream()
+            bmp.compress(Bitmap.CompressFormat.JPEG, 82, baos)
+            android.util.Base64.encodeToString(baos.toByteArray(), android.util.Base64.NO_WRAP)
+        }
+        if (sizeBytes == 0L && rawBytes != null) sizeBytes = rawBytes.size.toLong()
+        return AttachmentPreview(
+            name = displayName,
+            mimeType = mime,
+            isImage = true,
+            bitmap = decoded,
+            base64Image = base64,
+            extractedText = "",
+            byteCount = sizeBytes
+        )
     }
 
-    val textSnippet = runCatching {
+    val extracted = runCatching {
         context.contentResolver.openInputStream(uri)?.use { stream ->
             BufferedReader(InputStreamReader(stream)).use { reader ->
                 val sb = StringBuilder()
@@ -363,18 +445,30 @@ private fun readAttachmentFromUri(context: Context, uri: Uri): Pair<String, Stri
                     total += l.length + 1
                 }
                 if (reader.readLine() != null) {
-                    sb.append("\n[File truncated at 60,000 characters for safe context handling]")
+                    sb.append("\n[Truncated at 60,000 chars for safe local memory use]")
                 }
                 sb.toString()
             }
         }
-    }.getOrNull()
+    }.getOrNull().orEmpty()
 
-    return if (textSnippet != null) {
-        displayName to "\n--- File: $displayName ---\n$textSnippet\n--- End File ---\n"
+    val cleanText = if (extracted.any { it.isLetterOrDigit() }) {
+        extracted
+    } else if (lowerName.endsWith(".pdf")) {
+        "[PDF file attached: $displayName — PDF binary content may need text extraction if model doesn't read raw PDF bytes]"
     } else {
-        displayName to "[Attached file: $displayName]"
+        "[File attached: $displayName ($mime)]"
     }
+
+    return AttachmentPreview(
+        name = displayName,
+        mimeType = mime,
+        isImage = false,
+        bitmap = null,
+        base64Image = null,
+        extractedText = cleanText,
+        byteCount = sizeBytes
+    )
 }
 
 private fun selectFemaleVoice(tts: TextToSpeech): Voice? {
@@ -392,6 +486,11 @@ private fun selectFemaleVoice(tts: TextToSpeech): Voice? {
     }
 }
 
+private fun formatLineCheckpoint(lineCount: Int): Int {
+    if (lineCount <= 1) return 1
+    return (lineCount / 10) * 10
+}
+
 @OptIn(ExperimentalMaterial3Api::class, ExperimentalLayoutApi::class)
 @Composable
 fun ChatScreen() {
@@ -407,11 +506,16 @@ fun ChatScreen() {
     val messages = remember { mutableStateListOf<ChatEntry>() }
 
     var input by rememberSaveable { mutableStateOf("") }
-    var pendingAttachmentName by rememberSaveable { mutableStateOf<String?>(null) }
-    var pendingAttachmentContext by rememberSaveable { mutableStateOf<String?>(null) }
+    var attachment by remember { mutableStateOf<AttachmentPreview?>(null) }
+    var plusMenuOpen by remember { mutableStateOf(false) }
+    var pendingPhotoUri by remember { mutableStateOf<Uri?>(null) }
 
     var streaming by remember { mutableStateOf(false) }
     var streamJob by remember { mutableStateOf<Job?>(null) }
+    var elapsedSec by remember { mutableStateOf(0) }
+    var estimatedTotalSec by remember { mutableStateOf(0) }
+    var checkpointLine by remember { mutableStateOf(0) }
+
     var bannerError by remember { mutableStateOf<String?>(null) }
     var statusNote by remember { mutableStateOf<String?>(null) }
     var scanningLan by remember { mutableStateOf(false) }
@@ -444,6 +548,17 @@ fun ChatScreen() {
         }
     }
 
+    LaunchedEffect(streaming) {
+        if (streaming) {
+            elapsedSec = 0
+            estimatedTotalSec = (config.maxTokens / 35).coerceIn(8, 120)
+            while (streaming) {
+                delay(1000L)
+                elapsedSec += 1
+            }
+        }
+    }
+
     fun refreshModels() {
         scope.launch {
             bannerError = null
@@ -454,12 +569,32 @@ fun ChatScreen() {
                     if (selectedModel == null || selectedModel !in models) {
                         selectedModel = models.firstOrNull()
                     }
-                    statusNote = if (list.isEmpty()) "Connected, no models listed" else "Loaded ${list.size} models"
+                    statusNote = if (list.isEmpty()) {
+                        "Connected to ${normalizeHost(config.hostUrl)} (0 models)"
+                    } else {
+                        "Connected • ${list.size} model(s) ready"
+                    }
                 }
-                .onFailure {
-                    bannerError = "Cannot reach Ollama at ${normalizeHost(config.hostUrl)}"
+                .onFailure { err ->
+                    bannerError = "Cannot reach ${normalizeHost(config.hostUrl)}: ${err.message ?: "connection error"}"
                 }
         }
+    }
+
+    fun applyMaxSpeedPreset() {
+        config = config.copy(
+            cpuCores = 6,
+            gpuLayers = 99,
+            maxTokens = 512,
+            contextSize = 1536,
+            temperature = 0.6f,
+            topP = 0.85f,
+            keepAlive = "15m",
+            conciseDiffMode = true,
+            lineCheckpointTracker = true
+        )
+        saveConfig(context, config)
+        statusNote = "Applied Max Speed Preset (ctx 1536, max 512, gpu 99, cpu 6)"
     }
 
     fun scanForLaptop() {
@@ -501,8 +636,7 @@ fun ChatScreen() {
         streaming = false
         activeThreadId = UUID.randomUUID().toString()
         messages.clear()
-        pendingAttachmentName = null
-        pendingAttachmentContext = null
+        attachment = null
         bannerError = null
     }
 
@@ -519,17 +653,20 @@ fun ChatScreen() {
 
     val filePicker = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
         if (uri != null) {
-            val (name, extracted) = readAttachmentFromUri(context, uri)
-            pendingAttachmentName = name
-            pendingAttachmentContext = extracted
+            attachment = inspectAttachment(context, uri)
         }
     }
 
-    val imagePicker = rememberLauncherForActivityResult(ActivityResultContracts.GetContent()) { uri ->
+    val galleryPicker = rememberLauncherForActivityResult(ActivityResultContracts.GetContent()) { uri ->
         if (uri != null) {
-            val (name, extracted) = readAttachmentFromUri(context, uri)
-            pendingAttachmentName = name
-            pendingAttachmentContext = extracted
+            attachment = inspectAttachment(context, uri)
+        }
+    }
+
+    val cameraLauncher = rememberLauncherForActivityResult(ActivityResultContracts.TakePicture()) { taken ->
+        val uri = pendingPhotoUri
+        if (taken && uri != null) {
+            attachment = inspectAttachment(context, uri)
         }
     }
 
@@ -551,38 +688,53 @@ fun ChatScreen() {
 
     fun sendPrompt() {
         val rawText = input.trim()
-        val attachText = pendingAttachmentContext.orEmpty()
-        if (rawText.isEmpty() && attachText.isEmpty()) return
+        val att = attachment
+        if (rawText.isEmpty() && att == null) return
 
-        val modelToUse = selectedModel ?: models.firstOrNull() ?: "llama3.2"
+        val modelToUse = selectedModel ?: models.firstOrNull() ?: "qwen3.5:4b"
         val combinedPrompt = buildString {
+            if (config.singleHtmlAppMode) {
+                append("[Output Mode: Produce ONE self-contained single-file HTML/CSS/JS web app instead of splitting into many separate files.]\n")
+            }
             if (config.conciseDiffMode) {
-                append("[Instruction: Name the exact target file and output ONLY changed or relevant lines to save tokens; do not reprint whole unchanged files.]\n\n")
+                append("[Output Mode: Name the target file and output ONLY changed or relevant lines to save tokens; do not reprint entire unchanged files.]\n")
             }
-            if (rawText.isNotEmpty()) append(rawText)
-            if (attachText.isNotEmpty()) {
-                if (rawText.isNotEmpty()) append("\n")
-                append(attachText)
+            if (config.lineCheckpointTracker) {
+                append("[Progress Note: Keep code/line references concise.]\n")
             }
+            if (rawText.isNotEmpty()) {
+                append("\n").append(rawText)
+            }
+            if (att != null && !att.isImage && att.extractedText.isNotBlank()) {
+                append("\n\n--- Attached File: ${att.name} ---\n${att.extractedText}\n--- End File ---")
+            }
+        }.trim()
+
+        val displayText = when {
+            rawText.isNotEmpty() -> rawText
+            att?.isImage == true -> "Photo: ${att.name}"
+            att != null -> "File: ${att.name}"
+            else -> ""
         }
 
-        val displayMsg = if (rawText.isNotEmpty()) rawText else "Shared ${pendingAttachmentName ?: "file"}"
         messages.add(
             ChatEntry(
                 id = UUID.randomUUID().toString(),
                 role = "user",
-                content = displayMsg,
-                attachmentLabel = pendingAttachmentName
+                content = displayText,
+                attachmentName = att?.name,
+                isAttachmentImage = att?.isImage == true
             )
         )
         val assistantIdx = messages.size
         val assistantId = UUID.randomUUID().toString()
         messages.add(ChatEntry(id = assistantId, role = "assistant", content = ""))
 
+        val imagePayload = att?.base64Image
         input = ""
-        pendingAttachmentName = null
-        pendingAttachmentContext = null
+        attachment = null
         bannerError = null
+        checkpointLine = 1
         streaming = true
         saveCurrentThreadSnapshot()
 
@@ -592,14 +744,21 @@ fun ChatScreen() {
                     val endpoint = URL("${normalizeHost(config.hostUrl)}/api/generate")
                     val optionsJson = JSONObject().apply {
                         put("num_thread", config.cpuCores)
+                        put("num_gpu", config.gpuLayers)
                         put("num_predict", config.maxTokens)
                         put("num_ctx", config.contextSize)
+                        put("temperature", config.temperature)
+                        put("top_p", config.topP)
                     }
                     val payload = JSONObject().apply {
                         put("model", modelToUse)
-                        put("prompt", combinedPrompt)
+                        put("prompt", combinedPrompt.ifBlank { "Analyze this image." })
                         put("stream", true)
+                        put("keep_alive", config.keepAlive)
                         put("options", optionsJson)
+                        if (imagePayload != null) {
+                            put("images", JSONArray().put(imagePayload))
+                        }
                     }
 
                     val conn = (endpoint.openConnection() as HttpURLConnection).apply {
@@ -617,10 +776,11 @@ fun ChatScreen() {
                         }
 
                         if (conn.responseCode !in 200..299) {
-                            val errText = conn.errorStream?.bufferedReader()?.use { it.readText() }
-                                ?: "HTTP ${conn.responseCode}"
+                            val errBody = runCatching {
+                                conn.errorStream?.bufferedReader()?.use { it.readText() }
+                            }.getOrNull()
                             withContext(Dispatchers.Main) {
-                                bannerError = errText
+                                bannerError = "Ollama HTTP ${conn.responseCode}: ${errBody ?: "request failed"}"
                             }
                             return@withContext
                         }
@@ -636,7 +796,10 @@ fun ChatScreen() {
                                 if (token.isNotEmpty()) {
                                     acc.append(token)
                                     val snapshot = acc.toString()
+                                    val lineCount = snapshot.count { it == '\n' } + 1
+                                    val stepCheckpoint = formatLineCheckpoint(lineCount)
                                     withContext(Dispatchers.Main) {
+                                        checkpointLine = stepCheckpoint
                                         if (assistantIdx in messages.indices) {
                                             messages[assistantIdx] = messages[assistantIdx].copy(content = snapshot)
                                         }
@@ -651,7 +814,7 @@ fun ChatScreen() {
                 }
             }.onFailure { err ->
                 if (err !is kotlinx.coroutines.CancellationException) {
-                    bannerError = err.message ?: "Generation failed"
+                    bannerError = err.message ?: "Generation stopped with an error"
                 }
             }
 
@@ -688,6 +851,9 @@ fun ChatScreen() {
                     }
                 },
                 actions = {
+                    IconButton(onClick = { applyMaxSpeedPreset() }) {
+                        Icon(Icons.Default.Bolt, contentDescription = "Max speed preset", tint = WarmPeach)
+                    }
                     IconButton(onClick = { historyOpen = true }) {
                         Icon(Icons.Default.History, contentDescription = "Chat history")
                     }
@@ -744,7 +910,33 @@ fun ChatScreen() {
                 }
             }
 
-            if (statusNote != null) {
+            if (streaming) {
+                Surface(
+                    color = Color(0xFF171E2E),
+                    shape = RoundedCornerShape(12.dp),
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 12.dp, vertical = 2.dp)
+                        .border(1.dp, Color(0xFF2D4366), RoundedCornerShape(12.dp))
+                ) {
+                    Row(
+                        modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        CircularProgressIndicator(
+                            modifier = Modifier.size(16.dp),
+                            strokeWidth = 2.dp,
+                            color = WarmPeach
+                        )
+                        Spacer(modifier = Modifier.width(10.dp))
+                        Text(
+                            text = "Line $checkpointLine • ${elapsedSec}s / ~${estimatedTotalSec}s est.",
+                            style = MaterialTheme.typography.labelMedium,
+                            color = MaterialTheme.colorScheme.onSurface
+                        )
+                    }
+                }
+            } else if (statusNote != null) {
                 Text(
                     text = statusNote.orEmpty(),
                     style = MaterialTheme.typography.labelSmall,
@@ -819,39 +1011,11 @@ fun ChatScreen() {
                 }
             }
 
-            if (pendingAttachmentName != null) {
-                Surface(
-                    color = Color(0xFF1A2232),
-                    shape = RoundedCornerShape(999.dp),
-                    modifier = Modifier
-                        .padding(horizontal = 14.dp, vertical = 4.dp)
-                        .border(1.dp, Color(0xFF344B73), RoundedCornerShape(999.dp))
-                ) {
-                    Row(
-                        modifier = Modifier.padding(horizontal = 12.dp, vertical = 5.dp),
-                        verticalAlignment = Alignment.CenterVertically
-                    ) {
-                        Text(
-                            text = "Attached: ${pendingAttachmentName.orEmpty()}",
-                            style = MaterialTheme.typography.labelMedium,
-                            color = SkyBlue,
-                            maxLines = 1,
-                            overflow = TextOverflow.Ellipsis
-                        )
-                        Spacer(modifier = Modifier.width(6.dp))
-                        Icon(
-                            Icons.Default.Close,
-                            contentDescription = "Remove attachment",
-                            tint = MaterialTheme.colorScheme.onSurfaceVariant,
-                            modifier = Modifier
-                                .size(16.dp)
-                                .clickable {
-                                    pendingAttachmentName = null
-                                    pendingAttachmentContext = null
-                                }
-                        )
-                    }
-                }
+            attachment?.let { att ->
+                AttachmentPreviewCard(
+                    item = att,
+                    onRemove = { attachment = null }
+                )
             }
 
             Surface(
@@ -869,19 +1033,55 @@ fun ChatScreen() {
                         .padding(start = 6.dp, end = 6.dp, top = 4.dp, bottom = 4.dp),
                     verticalAlignment = Alignment.CenterVertically
                 ) {
-                    IconButton(onClick = { filePicker.launch(arrayOf("*/*")) }) {
-                        Icon(
-                            Icons.Default.Add,
-                            contentDescription = "Attach file",
-                            tint = SkyBlue
-                        )
-                    }
-                    IconButton(onClick = { imagePicker.launch("image/*") }) {
-                        Icon(
-                            Icons.Default.Image,
-                            contentDescription = "Attach photo",
-                            tint = WarmPeach
-                        )
+                    Box {
+                        IconButton(onClick = { plusMenuOpen = true }) {
+                            Icon(
+                                Icons.Default.Add,
+                                contentDescription = "Add photo or file",
+                                tint = SkyBlue
+                            )
+                        }
+                        DropdownMenu(
+                            expanded = plusMenuOpen,
+                            onDismissRequest = { plusMenuOpen = false }
+                        ) {
+                            DropdownMenuItem(
+                                text = { Text("Take photo") },
+                                leadingIcon = {
+                                    Icon(Icons.Default.CameraAlt, contentDescription = null, tint = WarmPeach)
+                                },
+                                onClick = {
+                                    plusMenuOpen = false
+                                    val uri = createTempPhotoUri(context)
+                                    if (uri != null) {
+                                        pendingPhotoUri = uri
+                                        cameraLauncher.launch(uri)
+                                    } else {
+                                        bannerError = "Camera FileProvider not configured in AndroidManifest.xml"
+                                    }
+                                }
+                            )
+                            DropdownMenuItem(
+                                text = { Text("Photos") },
+                                leadingIcon = {
+                                    Icon(Icons.Default.Image, contentDescription = null, tint = WarmPeach)
+                                },
+                                onClick = {
+                                    plusMenuOpen = false
+                                    galleryPicker.launch("image/*")
+                                }
+                            )
+                            DropdownMenuItem(
+                                text = { Text("Files / PDF") },
+                                leadingIcon = {
+                                    Icon(Icons.Default.Description, contentDescription = null, tint = SkyBlue)
+                                },
+                                onClick = {
+                                    plusMenuOpen = false
+                                    filePicker.launch(arrayOf("*/*"))
+                                }
+                            )
+                        }
                     }
 
                     OutlinedTextField(
@@ -907,25 +1107,33 @@ fun ChatScreen() {
                     Spacer(modifier = Modifier.width(4.dp))
 
                     if (streaming) {
-                        IconButton(
-                            onClick = {
-                                streamJob?.cancel()
-                                streaming = false
-                                saveCurrentThreadSnapshot()
-                            },
+                        Box(
+                            contentAlignment = Alignment.Center,
                             modifier = Modifier
-                                .size(42.dp)
+                                .size(44.dp)
                                 .clip(CircleShape)
                                 .background(Color(0xFF3E241C))
+                                .clickable {
+                                    streamJob?.cancel()
+                                    streaming = false
+                                    statusNote = "Cancelled generation at line $checkpointLine"
+                                    saveCurrentThreadSnapshot()
+                                }
                         ) {
+                            CircularProgressIndicator(
+                                modifier = Modifier.size(34.dp),
+                                strokeWidth = 2.dp,
+                                color = Terracotta
+                            )
                             Icon(
                                 Icons.Default.Close,
-                                contentDescription = "Stop",
-                                tint = WarmPeach
+                                contentDescription = "Cancel generation",
+                                tint = WarmPeach,
+                                modifier = Modifier.size(16.dp)
                             )
                         }
                     } else {
-                        val ready = input.isNotBlank() || pendingAttachmentContext != null
+                        val ready = input.isNotBlank() || attachment != null
                         IconButton(
                             onClick = { sendPrompt() },
                             enabled = ready,
@@ -1019,9 +1227,15 @@ fun ChatScreen() {
     if (settingsOpen) {
         var hostDraft by rememberSaveable { mutableStateOf(config.hostUrl) }
         var coresVal by rememberSaveable { mutableStateOf(config.cpuCores.toFloat()) }
+        var gpuVal by rememberSaveable { mutableStateOf(config.gpuLayers.toFloat()) }
         var maxTokensText by rememberSaveable { mutableStateOf(config.maxTokens.toString()) }
         var ctxText by rememberSaveable { mutableStateOf(config.contextSize.toString()) }
+        var tempVal by rememberSaveable { mutableStateOf(config.temperature) }
+        var topPVal by rememberSaveable { mutableStateOf(config.topP) }
+        var keepAliveDraft by rememberSaveable { mutableStateOf(config.keepAlive) }
         var conciseFlag by rememberSaveable { mutableStateOf(config.conciseDiffMode) }
+        var singleHtmlFlag by rememberSaveable { mutableStateOf(config.singleHtmlAppMode) }
+        var checkpointFlag by rememberSaveable { mutableStateOf(config.lineCheckpointTracker) }
         var rateVal by rememberSaveable { mutableStateOf(config.speechRate) }
         var pitchVal by rememberSaveable { mutableStateOf(config.speechPitch) }
 
@@ -1041,13 +1255,37 @@ fun ChatScreen() {
                         modifier = Modifier.fillMaxWidth()
                     )
 
-                    OutlinedButton(
-                        onClick = { scanForLaptop() },
-                        modifier = Modifier.fillMaxWidth()
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp)
                     ) {
-                        Icon(Icons.Default.Search, contentDescription = null)
-                        Spacer(modifier = Modifier.width(6.dp))
-                        Text(if (scanningLan) "Scanning Wi-Fi..." else "Auto-Detect Laptop on Wi-Fi")
+                        OutlinedButton(
+                            onClick = { scanForLaptop() },
+                            modifier = Modifier.weight(1f)
+                        ) {
+                            Icon(Icons.Default.Search, contentDescription = null)
+                            Spacer(modifier = Modifier.width(4.dp))
+                            Text(if (scanningLan) "Scanning..." else "Auto-IP")
+                        }
+                        OutlinedButton(
+                            onClick = {
+                                applyMaxSpeedPreset()
+                                coresVal = config.cpuCores.toFloat()
+                                gpuVal = config.gpuLayers.toFloat()
+                                maxTokensText = config.maxTokens.toString()
+                                ctxText = config.contextSize.toString()
+                                tempVal = config.temperature
+                                topPVal = config.topP
+                                keepAliveDraft = config.keepAlive
+                                conciseFlag = config.conciseDiffMode
+                                checkpointFlag = config.lineCheckpointTracker
+                            },
+                            modifier = Modifier.weight(1f)
+                        ) {
+                            Icon(Icons.Default.Bolt, contentDescription = null)
+                            Spacer(modifier = Modifier.width(4.dp))
+                            Text("Max Speed")
+                        }
                     }
 
                     HorizontalDivider()
@@ -1062,6 +1300,17 @@ fun ChatScreen() {
                         onValueChange = { coresVal = it },
                         valueRange = 1f..16f,
                         steps = 14
+                    )
+
+                    Text(
+                        text = "GPU Offload Layers (num_gpu): ${gpuVal.toInt()}",
+                        style = MaterialTheme.typography.bodyMedium,
+                        fontWeight = FontWeight.Medium
+                    )
+                    Slider(
+                        value = gpuVal,
+                        onValueChange = { gpuVal = it },
+                        valueRange = 0f..100f
                     )
 
                     OutlinedTextField(
@@ -1082,6 +1331,34 @@ fun ChatScreen() {
                         modifier = Modifier.fillMaxWidth()
                     )
 
+                    OutlinedTextField(
+                        value = keepAliveDraft,
+                        onValueChange = { keepAliveDraft = it },
+                        label = { Text("Keep Model Loaded (keep_alive, e.g. 15m or -1)") },
+                        singleLine = true,
+                        modifier = Modifier.fillMaxWidth()
+                    )
+
+                    Text(
+                        text = "Temperature: ${"%.2f".format(tempVal)}",
+                        style = MaterialTheme.typography.bodyMedium
+                    )
+                    Slider(
+                        value = tempVal,
+                        onValueChange = { tempVal = it },
+                        valueRange = 0.0f..1.5f
+                    )
+
+                    Text(
+                        text = "Top-P: ${"%.2f".format(topPVal)}",
+                        style = MaterialTheme.typography.bodyMedium
+                    )
+                    Slider(
+                        value = topPVal,
+                        onValueChange = { topPVal = it },
+                        valueRange = 0.1f..1.0f
+                    )
+
                     Row(
                         modifier = Modifier.fillMaxWidth(),
                         verticalAlignment = Alignment.CenterVertically
@@ -1089,12 +1366,42 @@ fun ChatScreen() {
                         Column(modifier = Modifier.weight(1f)) {
                             Text("Changed Lines Only Mode", fontWeight = FontWeight.Medium)
                             Text(
-                                "Names target file & outputs only needed lines to save tokens",
+                                "Names target file & outputs only needed lines",
                                 style = MaterialTheme.typography.labelSmall,
                                 color = MaterialTheme.colorScheme.onSurfaceVariant
                             )
                         }
                         Switch(checked = conciseFlag, onCheckedChange = { conciseFlag = it })
+                    }
+
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Column(modifier = Modifier.weight(1f)) {
+                            Text("Single HTML Web App Mode", fontWeight = FontWeight.Medium)
+                            Text(
+                                "Packs web apps into one HTML file instead of many files",
+                                style = MaterialTheme.typography.labelSmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        }
+                        Switch(checked = singleHtmlFlag, onCheckedChange = { singleHtmlFlag = it })
+                    }
+
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Column(modifier = Modifier.weight(1f)) {
+                            Text("Line Checkpoint Status (1, 10, 20...)", fontWeight = FontWeight.Medium)
+                            Text(
+                                "Shows live line checkpoints & time estimate while generating",
+                                style = MaterialTheme.typography.labelSmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        }
+                        Switch(checked = checkpointFlag, onCheckedChange = { checkpointFlag = it })
                     }
 
                     HorizontalDivider()
@@ -1128,9 +1435,15 @@ fun ChatScreen() {
                         config = StudioConfig(
                             hostUrl = hostDraft.trim().ifBlank { config.hostUrl },
                             cpuCores = coresVal.toInt().coerceIn(1, 32),
+                            gpuLayers = gpuVal.toInt().coerceIn(0, 200),
                             maxTokens = parsedMax,
                             contextSize = parsedCtx,
+                            temperature = tempVal,
+                            topP = topPVal,
+                            keepAlive = keepAliveDraft.trim().ifBlank { "15m" },
                             conciseDiffMode = conciseFlag,
+                            singleHtmlAppMode = singleHtmlFlag,
+                            lineCheckpointTracker = checkpointFlag,
                             speechRate = rateVal,
                             speechPitch = pitchVal
                         )
@@ -1151,6 +1464,89 @@ fun ChatScreen() {
                 }
             }
         )
+    }
+}
+
+@Composable
+private fun AttachmentPreviewCard(
+    item: AttachmentPreview,
+    onRemove: () -> Unit
+) {
+    Surface(
+        color = Color(0xFF171E2E),
+        shape = RoundedCornerShape(16.dp),
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(horizontal = 12.dp, vertical = 4.dp)
+            .border(1.dp, Color(0xFF344B73), RoundedCornerShape(16.dp))
+    ) {
+        Row(
+            modifier = Modifier.padding(10.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            if (item.isImage && item.bitmap != null) {
+                Image(
+                    bitmap = item.bitmap.asImageBitmap(),
+                    contentDescription = item.name,
+                    contentScale = ContentScale.Crop,
+                    modifier = Modifier
+                        .size(72.dp)
+                        .clip(RoundedCornerShape(12.dp))
+                )
+            } else {
+                Surface(
+                    color = Color(0xFF212B40),
+                    shape = RoundedCornerShape(12.dp),
+                    modifier = Modifier.size(72.dp)
+                ) {
+                    Box(contentAlignment = Alignment.Center) {
+                        Icon(
+                            Icons.Default.Description,
+                            contentDescription = null,
+                            tint = SkyBlue,
+                            modifier = Modifier.size(30.dp)
+                        )
+                    }
+                }
+            }
+
+            Spacer(modifier = Modifier.width(12.dp))
+
+            Column(modifier = Modifier.weight(1f)) {
+                Text(
+                    text = item.name,
+                    style = MaterialTheme.typography.bodyMedium,
+                    fontWeight = FontWeight.SemiBold,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis
+                )
+                Text(
+                    text = "${item.mimeType} • ${item.byteCount} B",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = SkyBlue,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis
+                )
+                if (!item.isImage && item.extractedText.isNotBlank()) {
+                    Spacer(modifier = Modifier.height(4.dp))
+                    Text(
+                        text = item.extractedText.take(180),
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        maxLines = 3,
+                        overflow = TextOverflow.Ellipsis
+                    )
+                }
+            }
+
+            IconButton(onClick = onRemove) {
+                Icon(
+                    Icons.Default.Close,
+                    contentDescription = "Remove attachment",
+                    tint = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            }
+        }
     }
 }
 
@@ -1220,7 +1616,7 @@ private fun StarterDeck(
     val starters = listOf(
         "Break down a tricky problem step by step",
         "Write clean code and explain only changed lines",
-        "Summarize a file and highlight key risks"
+        "Build a single-file HTML/JS web app"
     )
     Column(
         modifier = modifier
@@ -1237,7 +1633,7 @@ private fun StarterDeck(
         )
         Spacer(modifier = Modifier.height(6.dp))
         Text(
-            text = "Pick a prompt, attach a file or photo, or type below.",
+            text = "Pick a prompt, tap + for photo/file, or type below.",
             style = MaterialTheme.typography.bodyMedium,
             color = MaterialTheme.colorScheme.onSurfaceVariant
         )
@@ -1247,7 +1643,7 @@ private fun StarterDeck(
             horizontalArrangement = Arrangement.spacedBy(8.dp),
             verticalArrangement = Arrangement.spacedBy(8.dp)
         ) {
-            starters.forEachIndexed { i, text ->
+            starters.forEach { text ->
                 FilterChip(
                     selected = false,
                     onClick = { onPickStarter(text) },
@@ -1293,9 +1689,9 @@ private fun BubbleCard(
                 )
         ) {
             Column(modifier = Modifier.padding(horizontal = 15.dp, vertical = 11.dp)) {
-                if (entry.attachmentLabel != null) {
+                if (entry.attachmentName != null) {
                     Text(
-                        text = "Attachment: ${entry.attachmentLabel}",
+                        text = if (entry.isAttachmentImage) "Photo: ${entry.attachmentName}" else "File: ${entry.attachmentName}",
                         style = MaterialTheme.typography.labelSmall,
                         color = SkyBlue
                     )
