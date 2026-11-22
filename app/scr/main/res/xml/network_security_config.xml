@@ -1,8 +1,0 @@
-<?xml version="1.0" encoding="utf-8"?>
-<!--
-  Ollama speaks plain HTTP. LAN addresses cannot be listed by CIDR in a network security config,
-  so cleartext is permitted for hosts the user configures in the app.
--->
-<network-security-config>
-    <base-config cleartextTrafficPermitted="true" />
-</network-security-config>
