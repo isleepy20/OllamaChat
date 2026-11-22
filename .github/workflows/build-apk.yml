@@ -1,4 +1,4 @@
-name: Build Signed Debug APK
+name: Build Signed APK
 
 on:
   push:
@@ -22,47 +22,107 @@ jobs:
           distribution: temurin
           java-version: "17"
 
-      - name: Set up Android SDK
-        uses: android-actions/setup-android@v3
-
-      - name: Accept Android SDK licenses and install required packages
+      - name: Set up Android SDK environment
         shell: bash
         run: |
-          set +e
-          yes | sdkmanager --licenses
-          license_status=${PIPESTATUS[1]}
-          set -e
-          if [[ "$license_status" -ne 0 ]]; then
-            echo "Android SDK license acceptance failed." >&2
-            exit "$license_status"
+          ANDROID_ROOT="${ANDROID_HOME:-/usr/local/lib/android/sdk}"
+          echo "ANDROID_HOME=$ANDROID_ROOT" >> "$GITHUB_ENV"
+          echo "ANDROID_SDK_ROOT=$ANDROID_ROOT" >> "$GITHUB_ENV"
+
+          # Pre-accept SDK licenses
+          yes | "${ANDROID_ROOT}/cmdline-tools/latest/bin/sdkmanager" --licenses 2>/dev/null || true
+
+          # Ensure required SDK platform and build-tools are present
+          if [ ! -d "${ANDROID_ROOT}/build-tools/34.0.0" ] || [ ! -d "${ANDROID_ROOT}/platforms/android-34" ]; then
+            yes | "${ANDROID_ROOT}/cmdline-tools/latest/bin/sdkmanager" "platform-tools" "platforms;android-34" "build-tools;34.0.0" 2>/dev/null || true
           fi
-          sdkmanager --install "platform-tools" "platforms;android-34" "build-tools;34.0.0"
+
+          # Locate build-tools directory containing zipalign and apksigner
+          BUILD_TOOLS_DIR="${ANDROID_ROOT}/build-tools/34.0.0"
+          if [ ! -f "${BUILD_TOOLS_DIR}/zipalign" ]; then
+            BUILD_TOOLS_DIR=$(dirname "$(find "${ANDROID_ROOT}/build-tools" -name zipalign | head -n 1)")
+          fi
+
+          echo "Using Android build-tools: ${BUILD_TOOLS_DIR}"
+          echo "${BUILD_TOOLS_DIR}" >> "$GITHUB_PATH"
+          echo "${ANDROID_ROOT}/platform-tools" >> "$GITHUB_PATH"
+          echo "${ANDROID_ROOT}/cmdline-tools/latest/bin" >> "$GITHUB_PATH"
 
       - name: Set up Gradle 8.7
         uses: gradle/actions/setup-gradle@v4
         with:
           gradle-version: "8.7"
 
-      - name: Build signed debug APK from repository root
-        run: gradle :app:assembleDebug --stacktrace
+      - name: Compile Android APK
+        run: gradle :app:assembleRelease --stacktrace
 
-      - name: Verify and list generated APK files
+      - name: Run zipalign on APK
         shell: bash
         run: |
-          mapfile -t apks < <(find app/build/outputs/apk -type f -name '*.apk' -print)
-          if (( ${#apks[@]} == 0 )); then
-            echo "No APK was generated under app/build/outputs/apk." >&2
+          ZIPALIGN_BIN=$(which zipalign 2>/dev/null || find "${ANDROID_HOME:-/usr/local/lib/android/sdk}/build-tools" -name zipalign | head -n 1)
+          echo "Using zipalign at: $ZIPALIGN_BIN"
+
+          APK_PATH=$(find app/build/outputs/apk -type f -name '*.apk' ! -name '*aligned*' ! -name '*signed*' | head -n 1)
+          if [[ -z "$APK_PATH" ]]; then
+            echo "No compiled APK found to align." >&2
             exit 1
           fi
-          for apk in "${apks[@]}"; do
-            test -s "$apk"
-            printf '%s\n' "$apk"
-          done
+          echo "Found APK to align: $APK_PATH"
+          APK_DIR=$(dirname "$APK_PATH")
+          "$ZIPALIGN_BIN" -v -p 4 "$APK_PATH" "$APK_DIR/app-aligned.apk"
+          "$ZIPALIGN_BIN" -c -v 4 "$APK_DIR/app-aligned.apk"
 
-      - name: Upload signed debug APK
+      - name: Generate test keystore on runner
+        shell: bash
+        run: |
+          keytool -genkeypair -v \
+            -keystore test.keystore \
+            -alias testkey \
+            -keyalg RSA \
+            -keysize 2048 \
+            -validity 10000 \
+            -storepass testpassword \
+            -keypass testpassword \
+            -dname "CN=Test, OU=Test, O=Test, L=Test, S=Test, C=US"
+
+      - name: Sign APK with apksigner (V1, V2, V3, V4)
+        shell: bash
+        run: |
+          APKSIGNER_BIN=$(which apksigner 2>/dev/null || find "${ANDROID_HOME:-/usr/local/lib/android/sdk}/build-tools" -name apksigner | head -n 1)
+          echo "Using apksigner at: $APKSIGNER_BIN"
+
+          ALIGNED_APK=$(find app/build/outputs/apk -type f -name '*aligned.apk' | head -n 1)
+          if [[ -z "$ALIGNED_APK" ]]; then
+            echo "No aligned APK found to sign." >&2
+            exit 1
+          fi
+          APK_DIR=$(dirname "$ALIGNED_APK")
+          
+          # Signs the APK with V1, V2, V3, and V4 (which generates app-signed.apk and app-signed.apk.idsig)
+          "$APKSIGNER_BIN" sign \
+            --ks test.keystore \
+            --ks-pass pass:testpassword \
+            --ks-key-alias testkey \
+            --key-pass pass:testpassword \
+            --v1-signing-enabled true \
+            --v2-signing-enabled true \
+            --v3-signing-enabled true \
+            --v4-signing-enabled true \
+            --out "$APK_DIR/app-signed.apk" \
+            "$ALIGNED_APK"
+
+          echo "Verifying APK signatures..."
+          "$APKSIGNER_BIN" verify --verbose --print-certs "$APK_DIR/app-signed.apk"
+
+          echo "Listing generated signed files:"
+          ls -la "$APK_DIR/app-signed.apk"*
+
+      - name: Upload signed APK and idsig artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: app-debug-apk
-          path: '**/outputs/apk/**/*.apk'
+          name: app-signed-apk
+          path: |
+            app/build/outputs/apk/**/app-signed.apk
+            app/build/outputs/apk/**/app-signed.apk.idsig
           if-no-files-found: error
           compression-level: 0
