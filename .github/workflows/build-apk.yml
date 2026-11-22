@@ -29,15 +29,12 @@ jobs:
           echo "ANDROID_HOME=$ANDROID_ROOT" >> "$GITHUB_ENV"
           echo "ANDROID_SDK_ROOT=$ANDROID_ROOT" >> "$GITHUB_ENV"
 
-          # Pre-accept SDK licenses
           yes | "${ANDROID_ROOT}/cmdline-tools/latest/bin/sdkmanager" --licenses 2>/dev/null || true
 
-          # Ensure required SDK platform and build-tools are present
           if [ ! -d "${ANDROID_ROOT}/build-tools/34.0.0" ] || [ ! -d "${ANDROID_ROOT}/platforms/android-34" ]; then
             yes | "${ANDROID_ROOT}/cmdline-tools/latest/bin/sdkmanager" "platform-tools" "platforms;android-34" "build-tools;34.0.0" 2>/dev/null || true
           fi
 
-          # Locate build-tools directory containing zipalign and apksigner
           BUILD_TOOLS_DIR="${ANDROID_ROOT}/build-tools/34.0.0"
           if [ ! -f "${BUILD_TOOLS_DIR}/zipalign" ]; then
             BUILD_TOOLS_DIR=$(dirname "$(find "${ANDROID_ROOT}/build-tools" -name zipalign | head -n 1)")
@@ -65,7 +62,6 @@ jobs:
           echo "Listing all APKs produced by Gradle:"
           find app/build -type f -name '*.apk' -print || true
 
-          # Target unsigned release APK first, fallback to any compiled APK
           APK_PATH=$(find app/build/outputs/apk -type f -name '*unsigned*.apk' | head -n 1)
           if [[ -z "$APK_PATH" ]]; then
             APK_PATH=$(find app/build/outputs/apk -type f -name '*.apk' ! -name '*-aligned.apk' ! -name '*-signed.apk' | head -n 1)
@@ -111,7 +107,6 @@ jobs:
           fi
           APK_DIR=$(dirname "$ALIGNED_APK")
 
-          # Signs with V1, V2, V3, and V4 (producing app-signed.apk and app-signed.apk.idsig)
           "$APKSIGNER_BIN" sign \
             --ks test.keystore \
             --ks-pass pass:testpassword \
