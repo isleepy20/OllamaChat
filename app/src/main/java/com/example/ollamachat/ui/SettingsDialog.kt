@@ -8,6 +8,7 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
@@ -26,6 +27,7 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.unit.dp
 
 @Composable
@@ -38,6 +40,10 @@ fun SettingsDialog(state: UiState, vm: ChatViewModel) {
 
     AlertDialog(
         onDismissRequest = vm::closeSettings,
+        containerColor = Color(0xFF111722),
+        titleContentColor = MaterialTheme.colorScheme.onSurface,
+        textContentColor = MaterialTheme.colorScheme.onSurface,
+        shape = RoundedCornerShape(24.dp),
         title = { Text("Settings") },
         confirmButton = { TextButton(onClick = vm::closeSettings) { Text("Close") } },
         text = {
@@ -45,7 +51,7 @@ fun SettingsDialog(state: UiState, vm: ChatViewModel) {
                 modifier = Modifier.verticalScroll(rememberScrollState()),
                 verticalArrangement = Arrangement.spacedBy(8.dp)
             ) {
-                Text("Ollama server", style = MaterialTheme.typography.titleSmall)
+                Text("Server", style = MaterialTheme.typography.titleSmall, color = MaterialTheme.colorScheme.primary)
                 OutlinedTextField(
                     value = url,
                     onValueChange = { url = it; urlError = null },
@@ -68,6 +74,7 @@ fun SettingsDialog(state: UiState, vm: ChatViewModel) {
                 Text(
                     "System prompt (optional)",
                     style = MaterialTheme.typography.titleSmall,
+                    color = MaterialTheme.colorScheme.primary,
                     modifier = Modifier.padding(top = 8.dp)
                 )
                 OutlinedTextField(
@@ -85,7 +92,7 @@ fun SettingsDialog(state: UiState, vm: ChatViewModel) {
                     verticalAlignment = Alignment.CenterVertically,
                     horizontalArrangement = Arrangement.SpaceBetween
                 ) {
-                    Text("Installed models", style = MaterialTheme.typography.titleSmall)
+                    Text("Installed models", style = MaterialTheme.typography.titleSmall, color = MaterialTheme.colorScheme.primary)
                     if (state.loadingModels) {
                         CircularProgressIndicator(Modifier.size(20.dp), strokeWidth = 2.dp)
                     } else {
@@ -108,6 +115,7 @@ fun SettingsDialog(state: UiState, vm: ChatViewModel) {
                 Text(
                     "Download a model",
                     style = MaterialTheme.typography.titleSmall,
+                    color = MaterialTheme.colorScheme.primary,
                     modifier = Modifier.padding(top = 8.dp)
                 )
                 OutlinedTextField(
