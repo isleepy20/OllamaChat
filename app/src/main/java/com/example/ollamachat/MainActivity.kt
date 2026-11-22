@@ -3,7 +3,6 @@ package com.example.ollamachat
 import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
-import androidx.activity.viewModels
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
@@ -11,9 +10,8 @@ import androidx.compose.material3.darkColorScheme
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import com.example.ollamachat.ui.ChatScreen
-import com.example.ollamachat.ui.ChatViewModel
 
-private val HybridAppColorScheme = darkColorScheme(
+private val HybridThemeColors = darkColorScheme(
     primary = Color(0xFF8AB4F8),
     onPrimary = Color(0xFF072146),
     primaryContainer = Color(0xFF1B3458),
@@ -33,19 +31,16 @@ private val HybridAppColorScheme = darkColorScheme(
     onErrorContainer = Color(0xFFFFDCE0)
 )
 
-/** Launches directly into the chat UI. There is no login, account, or token logic anywhere. */
 class MainActivity : ComponentActivity() {
-    private val viewModel: ChatViewModel by viewModels()
-
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         setContent {
-            MaterialTheme(colorScheme = HybridAppColorScheme) {
+            MaterialTheme(colorScheme = HybridThemeColors) {
                 Surface(
                     modifier = Modifier.fillMaxSize(),
                     color = MaterialTheme.colorScheme.background
                 ) {
-                    ChatScreen(viewModel)
+                    ChatScreen()
                 }
             }
         }
