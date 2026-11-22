@@ -26,7 +26,6 @@ jobs:
       - name: Install Android SDK packages and accept licenses
         run: |
           SDKMANAGER=$(find "$ANDROID_HOME/cmdline-tools" -name "sdkmanager" -type f | sort -V | tail -n 1)
-          echo "Using sdkmanager: $SDKMANAGER"
           yes | "$SDKMANAGER" --sdk_root="$ANDROID_HOME" --licenses > /dev/null || true
           "$SDKMANAGER" --sdk_root="$ANDROID_HOME" "platform-tools" "platforms;android-34" "build-tools;34.0.0"
 
@@ -34,7 +33,7 @@ jobs:
         uses: gradle/gradle-build-action@v3
         with:
           gradle-version: "8.7"
-          arguments: assembleDebug --stacktrace
+          arguments: assembleDebug
 
       - name: Upload signed debug APK
         uses: actions/upload-artifact@v4
