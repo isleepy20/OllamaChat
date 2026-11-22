@@ -45,7 +45,6 @@ fun SettingsDialog(state: UiState, vm: ChatViewModel) {
                 modifier = Modifier.verticalScroll(rememberScrollState()),
                 verticalArrangement = Arrangement.spacedBy(8.dp)
             ) {
-                // ---- Server ----
                 Text("Ollama server", style = MaterialTheme.typography.titleSmall)
                 OutlinedTextField(
                     value = url,
@@ -54,25 +53,33 @@ fun SettingsDialog(state: UiState, vm: ChatViewModel) {
                     placeholder = { Text("http://192.168.1.20:11434") },
                     singleLine = true,
                     isError = urlError != null,
-                    supportingText = { Text(urlError ?: "Use http://<HOST-IP>:11434 for a PC on your network.") },
+                    supportingText = {
+                        Text(urlError ?: "Use http://<HOST-IP>:11434 for a PC on your network.")
+                    },
                     modifier = Modifier.fillMaxWidth()
                 )
                 Button(onClick = {
                     urlError = vm.saveBaseUrl(url)
                     if (urlError == null) url = vm.state.value.baseUrl
-                }) { Text("Save & connect") }
+                }) {
+                    Text("Save & connect")
+                }
 
-                // ---- System prompt ----
-                Text("System prompt (optional)", style = MaterialTheme.typography.titleSmall, modifier = Modifier.padding(top = 8.dp))
+                Text(
+                    "System prompt (optional)",
+                    style = MaterialTheme.typography.titleSmall,
+                    modifier = Modifier.padding(top = 8.dp)
+                )
                 OutlinedTextField(
                     value = prompt,
                     onValueChange = { prompt = it },
                     modifier = Modifier.fillMaxWidth(),
                     maxLines = 4
                 )
-                OutlinedButton(onClick = { vm.saveSystemPrompt(prompt) }) { Text("Save prompt") }
+                OutlinedButton(onClick = { vm.saveSystemPrompt(prompt) }) {
+                    Text("Save prompt")
+                }
 
-                // ---- Installed models ----
                 Row(
                     Modifier.fillMaxWidth().padding(top = 8.dp),
                     verticalAlignment = Alignment.CenterVertically,
@@ -98,8 +105,11 @@ fun SettingsDialog(state: UiState, vm: ChatViewModel) {
                     }
                 }
 
-                // ---- Pull ----
-                Text("Download a model", style = MaterialTheme.typography.titleSmall, modifier = Modifier.padding(top = 8.dp))
+                Text(
+                    "Download a model",
+                    style = MaterialTheme.typography.titleSmall,
+                    modifier = Modifier.padding(top = 8.dp)
+                )
                 OutlinedTextField(
                     value = pullName,
                     onValueChange = { pullName = it },
@@ -110,7 +120,9 @@ fun SettingsDialog(state: UiState, vm: ChatViewModel) {
                     modifier = Modifier.fillMaxWidth()
                 )
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    Button(onClick = { vm.pullModel(pullName) }, enabled = !pull.active) { Text("Download / Pull") }
+                    Button(onClick = { vm.pullModel(pullName) }, enabled = !pull.active) {
+                        Text("Download / Pull")
+                    }
                     if (pull.active) {
                         OutlinedButton(onClick = vm::cancelPull) { Text("Cancel") }
                     }
@@ -118,10 +130,20 @@ fun SettingsDialog(state: UiState, vm: ChatViewModel) {
                 if (pull.active || pull.status.isNotEmpty()) {
                     val fraction = pull.fraction
                     if (pull.active) {
-                        if (fraction != null) LinearProgressIndicator(progress = { fraction }, modifier = Modifier.fillMaxWidth())
-                        else LinearProgressIndicator(modifier = Modifier.fillMaxWidth())
+                        if (fraction != null) {
+                            LinearProgressIndicator(
+                                progress = { fraction },
+                                modifier = Modifier.fillMaxWidth()
+                            )
+                        } else {
+                            LinearProgressIndicator(modifier = Modifier.fillMaxWidth())
+                        }
                     }
-                    val pct = if (pull.active && fraction != null) " — ${(fraction * 100).toInt()}%" else ""
+                    val pct = if (pull.active && fraction != null) {
+                        " — ${(fraction * 100).toInt()}%"
+                    } else {
+                        ""
+                    }
                     Text(pull.status + pct, style = MaterialTheme.typography.bodySmall)
                 }
                 pull.error?.let {
