@@ -33,7 +33,6 @@ import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.ExperimentalMaterial3Api
-import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
@@ -127,22 +126,17 @@ fun ChatScreen(vm: ChatViewModel) {
                 .imePadding()
                 .fillMaxSize()
         ) {
-            Row(
+            ModelSelector(
+                models = state.models,
+                selected = state.selectedModel,
+                onSelect = vm::selectModel
+            )
+            Box(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .padding(horizontal = 12.dp, vertical = 6.dp),
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.SpaceBetween
-            ) {
-                ModelSelector(
-                    models = state.models,
-                    selected = state.selectedModel,
-                    onSelect = vm::selectModel
-                )
-            }
-
-            HorizontalDivider(color = Color(0xFF232734), thickness = 1.dp)
-
+                    .height(1.dp)
+                    .background(Color(0xFF232734))
+            )
             state.connectionError?.let { Banner(it, onDismiss = null) }
             state.chatError?.let { Banner(it, onDismiss = vm::dismissChatError) }
 
@@ -285,7 +279,6 @@ private fun HybridEmptyState(
                 modifier = Modifier
                     .fillMaxWidth()
                     .padding(bottom = 8.dp)
-                    .clip(RoundedCornerShape(18.dp))
                     .border(1.dp, accentBorder, RoundedCornerShape(18.dp))
                     .clickable { onPickStarter(prompt) }
             ) {
@@ -302,14 +295,12 @@ private fun HybridEmptyState(
 @Composable
 private fun ModelSelector(models: List<String>, selected: String?, onSelect: (String) -> Unit) {
     var expanded by rememberSaveable { mutableStateOf(false) }
-    Box {
+    Box(Modifier.padding(horizontal = 12.dp, vertical = 6.dp)) {
         Surface(
             color = Color(0xFF191D29),
             contentColor = MaterialTheme.colorScheme.onSurface,
             shape = RoundedCornerShape(999.dp),
-            modifier = Modifier
-                .clip(RoundedCornerShape(999.dp))
-                .border(1.dp, Color(0xFF31394D), RoundedCornerShape(999.dp))
+            modifier = Modifier.border(1.dp, Color(0xFF31394D), RoundedCornerShape(999.dp))
         ) {
             TextButton(
                 onClick = { expanded = true },
