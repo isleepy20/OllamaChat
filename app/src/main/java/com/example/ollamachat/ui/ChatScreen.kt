@@ -52,6 +52,7 @@ import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.ContentCopy
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Description
+import androidx.compose.material.icons.filled.FolderZip
 import androidx.compose.material.icons.filled.History
 import androidx.compose.material.icons.filled.Image
 import androidx.compose.material.icons.filled.Refresh
@@ -105,9 +106,13 @@ import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.core.content.FileProvider
+import java.io.BufferedInputStream
+import java.io.BufferedOutputStream
 import java.io.BufferedReader
 import java.io.ByteArrayOutputStream
 import java.io.File
+import java.io.FileInputStream
+import java.io.FileOutputStream
 import java.io.InputStreamReader
 import java.io.OutputStreamWriter
 import java.net.HttpURLConnection
@@ -117,6 +122,8 @@ import java.net.URL
 import java.util.Locale
 import java.util.UUID
 import java.util.concurrent.Executors
+import java.util.zip.ZipEntry
+import java.util.zip.ZipOutputStream
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
@@ -144,7 +151,9 @@ private data class ChatEntry(
     val role: String,
     val content: String,
     val attachmentName: String? = null,
-    val isAttachmentImage: Boolean = false
+    val isAttachmentImage: Boolean = false,
+    val changeSummary: String? = null,
+    val bundleZipPath: String? = null
 )
 
 private data class SavedThread(
@@ -156,15 +165,16 @@ private data class SavedThread(
 
 private data class StudioConfig(
     val hostUrl: String = "http://10.0.0.134:11434",
-    val cpuCores: Int = 6,
+    val cpuCores: Int = 5,
     val gpuLayers: Int = 99,
-    val maxTokens: Int = 1024,
-    val contextSize: Int = 2048,
-    val temperature: Float = 0.7f,
-    val topP: Float = 0.9f,
+    val maxTokens: Int = 512,
+    val contextSize: Int = 1536,
+    val temperature: Float = 0.6f,
+    val topP: Float = 0.85f,
     val keepAlive: String = "15m",
     val conciseDiffMode: Boolean = true,
     val singleHtmlAppMode: Boolean = false,
+    val autoBundleZip: Boolean = true,
     val lineCheckpointTracker: Boolean = true,
     val speechRate: Float = 1.0f,
     val speechPitch: Float = 1.08f
@@ -174,15 +184,16 @@ private fun loadConfig(context: Context): StudioConfig {
     val prefs = context.getSharedPreferences("studio_prefs", Context.MODE_PRIVATE)
     return StudioConfig(
         hostUrl = prefs.getString("host_url", "http://10.0.0.134:11434") ?: "http://10.0.0.134:11434",
-        cpuCores = prefs.getInt("cpu_cores", 6).coerceIn(1, 32),
+        cpuCores = prefs.getInt("cpu_cores", 5).coerceIn(1, 32),
         gpuLayers = prefs.getInt("gpu_layers", 99).coerceIn(0, 200),
-        maxTokens = prefs.getInt("max_tokens", 1024).coerceIn(64, 32768),
-        contextSize = prefs.getInt("context_size", 2048).coerceIn(512, 65536),
-        temperature = prefs.getFloat("temperature", 0.7f).coerceIn(0.0f, 2.0f),
-        topP = prefs.getFloat("top_p", 0.9f).coerceIn(0.1f, 1.0f),
+        maxTokens = prefs.getInt("max_tokens", 512).coerceIn(64, 32768),
+        contextSize = prefs.getInt("context_size", 1536).coerceIn(512, 65536),
+        temperature = prefs.getFloat("temperature", 0.6f).coerceIn(0.0f, 2.0f),
+        topP = prefs.getFloat("top_p", 0.85f).coerceIn(0.1f, 1.0f),
         keepAlive = prefs.getString("keep_alive", "15m") ?: "15m",
         conciseDiffMode = prefs.getBoolean("concise_diff", true),
         singleHtmlAppMode = prefs.getBoolean("single_html_app", false),
+        autoBundleZip = prefs.getBoolean("auto_bundle_zip", true),
         lineCheckpointTracker = prefs.getBoolean("line_checkpoint", true),
         speechRate = prefs.getFloat("speech_rate", 1.0f).coerceIn(0.6f, 1.6f),
         speechPitch = prefs.getFloat("speech_pitch", 1.08f).coerceIn(0.75f, 1.35f)
@@ -201,6 +212,7 @@ private fun saveConfig(context: Context, cfg: StudioConfig) {
         .putString("keep_alive", cfg.keepAlive.trim().ifBlank { "15m" })
         .putBoolean("concise_diff", cfg.conciseDiffMode)
         .putBoolean("single_html_app", cfg.singleHtmlAppMode)
+        .putBoolean("auto_bundle_zip", cfg.autoBundleZip)
         .putBoolean("line_checkpoint", cfg.lineCheckpointTracker)
         .putFloat("speech_rate", cfg.speechRate)
         .putFloat("speech_pitch", cfg.speechPitch)
@@ -225,7 +237,9 @@ private fun loadThreads(context: Context): MutableList<SavedThread> {
                         role = m.optString("role", "user"),
                         content = m.optString("content", ""),
                         attachmentName = m.optString("attachment_name", "").ifBlank { null },
-                        isAttachmentImage = m.optBoolean("attachment_is_image", false)
+                        isAttachmentImage = m.optBoolean("attachment_is_image", false),
+                        changeSummary = m.optString("change_summary", "").ifBlank { null },
+                        bundleZipPath = m.optString("bundle_zip_path", "").ifBlank { null }
                     )
                 )
             }
@@ -257,6 +271,8 @@ private fun persistThreads(context: Context, threads: List<SavedThread>) {
             mo.put("content", m.content)
             mo.put("attachment_name", m.attachmentName ?: "")
             mo.put("attachment_is_image", m.isAttachmentImage)
+            mo.put("change_summary", m.changeSummary ?: "")
+            mo.put("bundle_zip_path", m.bundleZipPath ?: "")
             msgArr.put(mo)
         }
         obj.put("messages", msgArr)
@@ -278,30 +294,62 @@ private fun normalizeHost(raw: String): String {
     return if (Regex(":\\d+$").containsMatchIn(withScheme)) withScheme else "$withScheme:11434"
 }
 
-private suspend fun fetchModelsFromHost(baseUrl: String): List<String> = withContext(Dispatchers.IO) {
-    val url = URL("${normalizeHost(baseUrl)}/api/tags")
-    val conn = (url.openConnection() as HttpURLConnection).apply {
+private data class HostTelemetry(
+    val models: List<String>,
+    val activeModel: String?,
+    val vramSizeMb: Long?
+)
+
+private suspend fun inspectHostTelemetry(baseUrl: String): HostTelemetry = withContext(Dispatchers.IO) {
+    val base = normalizeHost(baseUrl)
+    val tagsUrl = URL("$base/api/tags")
+    val tagsConn = (tagsUrl.openConnection() as HttpURLConnection).apply {
         requestMethod = "GET"
-        connectTimeout = 3000
-        readTimeout = 5000
+        connectTimeout = 2500
+        readTimeout = 4000
     }
+    val modelList = mutableListOf<String>()
     try {
-        if (conn.responseCode !in 200..299) {
-            error("HTTP ${conn.responseCode} from ${normalizeHost(baseUrl)}")
+        if (tagsConn.responseCode in 200..299) {
+            val body = tagsConn.inputStream.bufferedReader().use { it.readText() }
+            val arr = JSONObject(body).optJSONArray("models") ?: JSONArray()
+            for (i in 0 until arr.length()) {
+                val item = arr.optJSONObject(i)
+                val name = item?.optString("name") ?: item?.optString("model")
+                if (!name.isNullOrBlank()) modelList.add(name)
+            }
+        } else {
+            error("HTTP ${tagsConn.responseCode} from $base")
         }
-        val body = conn.inputStream.bufferedReader().use { it.readText() }
-        val json = JSONObject(body)
-        val arr = json.optJSONArray("models") ?: JSONArray()
-        val list = mutableListOf<String>()
-        for (i in 0 until arr.length()) {
-            val item = arr.optJSONObject(i)
-            val name = item?.optString("name") ?: item?.optString("model")
-            if (!name.isNullOrBlank()) list.add(name)
-        }
-        list
     } finally {
-        conn.disconnect()
+        tagsConn.disconnect()
     }
+
+    var activeModel: String? = null
+    var vramMb: Long? = null
+    runCatching {
+        val psConn = (URL("$base/api/ps").openConnection() as HttpURLConnection).apply {
+            requestMethod = "GET"
+            connectTimeout = 1500
+            readTimeout = 2000
+        }
+        try {
+            if (psConn.responseCode in 200..299) {
+                val psBody = psConn.inputStream.bufferedReader().use { it.readText() }
+                val psArr = JSONObject(psBody).optJSONArray("models") ?: JSONArray()
+                if (psArr.length() > 0) {
+                    val first = psArr.getJSONObject(0)
+                    activeModel = first.optString("name").ifBlank { null }
+                    val sizeVram = first.optLong("size_vram", 0L)
+                    if (sizeVram > 0L) vramMb = sizeVram / (1024L * 1024L)
+                }
+            }
+        } finally {
+            psConn.disconnect()
+        }
+    }
+
+    HostTelemetry(models = modelList, activeModel = activeModel, vramSizeMb = vramMb)
 }
 
 @Suppress("DEPRECATION")
@@ -417,7 +465,7 @@ private fun inspectAttachment(context: Context, uri: Uri): AttachmentPreview {
         val decoded = rawBytes?.let { BitmapFactory.decodeByteArray(it, 0, it.size) }
         val base64 = decoded?.let { bmp ->
             val baos = ByteArrayOutputStream()
-            bmp.compress(Bitmap.CompressFormat.JPEG, 82, baos)
+            bmp.compress(Bitmap.CompressFormat.JPEG, 80, baos)
             android.util.Base64.encodeToString(baos.toByteArray(), android.util.Base64.NO_WRAP)
         }
         if (sizeBytes == 0L && rawBytes != null) sizeBytes = rawBytes.size.toLong()
@@ -455,7 +503,7 @@ private fun inspectAttachment(context: Context, uri: Uri): AttachmentPreview {
     val cleanText = if (extracted.any { it.isLetterOrDigit() }) {
         extracted
     } else if (lowerName.endsWith(".pdf")) {
-        "[PDF file attached: $displayName — PDF binary content may need text extraction if model doesn't read raw PDF bytes]"
+        "[PDF file attached: $displayName]"
     } else {
         "[File attached: $displayName ($mime)]"
     }
@@ -469,6 +517,74 @@ private fun inspectAttachment(context: Context, uri: Uri): AttachmentPreview {
         extractedText = cleanText,
         byteCount = sizeBytes
     )
+}
+
+private fun writeFilesAndOptionalZip(
+    context: Context,
+    responseText: String,
+    makeZip: Boolean
+): Pair<String, String?> {
+    val workspaceRoot = File(context.filesDir, "workspace/${System.currentTimeMillis()}").apply { mkdirs() }
+    val fenceRegex = Regex("```([a-zA-Z0-9_+.-]*)\\s*(?:file:([^\\n]+))?\\n([\\s\\S]*?)```")
+    val matches = fenceRegex.findAll(responseText).toList()
+
+    val writtenFiles = mutableListOf<File>()
+    matches.forEachIndexed { idx, m ->
+        val lang = m.groupValues[1].trim().lowercase(Locale.ROOT)
+        val explicitPath = m.groupValues[2].trim().removePrefix("/").removePrefix("./")
+        val body = m.groupValues[3]
+
+        val ext = when (lang) {
+            "cpp", "c++", "cc", "cxx" -> "cpp"
+            "h", "hpp" -> "hpp"
+            "html", "htm" -> "html"
+            "kt", "kotlin" -> "kt"
+            "py", "python" -> "py"
+            "js", "javascript" -> "js"
+            "ts", "typescript" -> "ts"
+            "json" -> "json"
+            "xml" -> "xml"
+            "css" -> "css"
+            "sh", "bash" -> "sh"
+            else -> lang.ifBlank { "txt" }
+        }
+
+        val relPath = if (explicitPath.isNotBlank()) explicitPath else "generated_${idx + 1}.$ext"
+        val safeTarget = File(workspaceRoot, relPath)
+        if (safeTarget.canonicalPath.startsWith(workspaceRoot.canonicalPath)) {
+            safeTarget.parentFile?.mkdirs()
+            safeTarget.writeText(body)
+            writtenFiles.add(safeTarget)
+        }
+    }
+
+    val lineCount = responseText.lines().size
+    val summary = buildString {
+        append("Updated output ($lineCount lines)")
+        if (writtenFiles.isNotEmpty()) {
+            append(" • Saved ${writtenFiles.size} file(s): ")
+            append(writtenFiles.take(3).joinToString { it.name })
+            if (writtenFiles.size > 3) append(" +${writtenFiles.size - 3} more")
+        }
+    }
+
+    var zipPath: String? = null
+    if (makeZip && writtenFiles.size >= 2) {
+        val zipFile = File(context.filesDir, "bundle_${System.currentTimeMillis()}.zip")
+        ZipOutputStream(BufferedOutputStream(FileOutputStream(zipFile))).use { zos ->
+            writtenFiles.forEach { file ->
+                val entryName = file.relativeTo(workspaceRoot).path.replace('\\', '/')
+                zos.putNextEntry(ZipEntry(entryName))
+                BufferedInputStream(FileInputStream(file)).use { bis ->
+                    bis.copyTo(zos)
+                }
+                zos.closeEntry()
+            }
+        }
+        zipPath = zipFile.absolutePath
+    }
+
+    return summary to zipPath
 }
 
 private fun selectFemaleVoice(tts: TextToSpeech): Voice? {
@@ -551,7 +667,7 @@ fun ChatScreen() {
     LaunchedEffect(streaming) {
         if (streaming) {
             elapsedSec = 0
-            estimatedTotalSec = (config.maxTokens / 35).coerceIn(8, 120)
+            estimatedTotalSec = (config.maxTokens / 40).coerceIn(5, 90)
             while (streaming) {
                 delay(1000L)
                 elapsedSec += 1
@@ -559,21 +675,22 @@ fun ChatScreen() {
         }
     }
 
-    fun refreshModels() {
+    fun refreshModels(preferFastModel: Boolean = false) {
         scope.launch {
             bannerError = null
-            runCatching { fetchModelsFromHost(config.hostUrl) }
-                .onSuccess { list ->
+            runCatching { inspectHostTelemetry(config.hostUrl) }
+                .onSuccess { info ->
                     models.clear()
-                    models.addAll(list)
-                    if (selectedModel == null || selectedModel !in models) {
-                        selectedModel = models.firstOrNull()
+                    models.addAll(info.models)
+                    if (preferFastModel && info.models.isNotEmpty()) {
+                        selectedModel = info.activeModel
+                            ?: info.models.firstOrNull { it.contains("3b", true) || it.contains("4b", true) || it.contains("1.5b", true) }
+                            ?: info.models.first()
+                    } else if (selectedModel == null || selectedModel !in models) {
+                        selectedModel = info.activeModel ?: models.firstOrNull()
                     }
-                    statusNote = if (list.isEmpty()) {
-                        "Connected to ${normalizeHost(config.hostUrl)} (0 models)"
-                    } else {
-                        "Connected • ${list.size} model(s) ready"
-                    }
+                    val vramPart = info.vramSizeMb?.let { " • VRAM ${it}MB" }.orEmpty()
+                    statusNote = "Ready (${selectedModel ?: "none"})$vramPart"
                 }
                 .onFailure { err ->
                     bannerError = "Cannot reach ${normalizeHost(config.hostUrl)}: ${err.message ?: "connection error"}"
@@ -581,20 +698,21 @@ fun ChatScreen() {
         }
     }
 
-    fun applyMaxSpeedPreset() {
+    fun applyBalancedMaxSpeed() {
         config = config.copy(
-            cpuCores = 6,
+            cpuCores = 5,
             gpuLayers = 99,
             maxTokens = 512,
             contextSize = 1536,
-            temperature = 0.6f,
+            temperature = 0.55f,
             topP = 0.85f,
             keepAlive = "15m",
             conciseDiffMode = true,
             lineCheckpointTracker = true
         )
         saveConfig(context, config)
-        statusNote = "Applied Max Speed Preset (ctx 1536, max 512, gpu 99, cpu 6)"
+        refreshModels(preferFastModel = true)
+        statusNote = "Max Speed tuned safely (CPU 5, GPU 99, ctx 1536, max 512)"
     }
 
     fun scanForLaptop() {
@@ -694,19 +812,16 @@ fun ChatScreen() {
         val modelToUse = selectedModel ?: models.firstOrNull() ?: "qwen3.5:4b"
         val combinedPrompt = buildString {
             if (config.singleHtmlAppMode) {
-                append("[Output Mode: Produce ONE self-contained single-file HTML/CSS/JS web app instead of splitting into many separate files.]\n")
+                append("[Format Rule: Output ONE complete single-file HTML/CSS/JS app instead of splitting into many files.]\n")
             }
             if (config.conciseDiffMode) {
-                append("[Output Mode: Name the target file and output ONLY changed or relevant lines to save tokens; do not reprint entire unchanged files.]\n")
-            }
-            if (config.lineCheckpointTracker) {
-                append("[Progress Note: Keep code/line references concise.]\n")
+                append("[Format Rule: State exact target file/path and show only changed or essential lines to save tokens.]\n")
             }
             if (rawText.isNotEmpty()) {
                 append("\n").append(rawText)
             }
             if (att != null && !att.isImage && att.extractedText.isNotBlank()) {
-                append("\n\n--- Attached File: ${att.name} ---\n${att.extractedText}\n--- End File ---")
+                append("\n\n--- File: ${att.name} ---\n${att.extractedText}\n--- End File ---")
             }
         }.trim()
 
@@ -739,6 +854,7 @@ fun ChatScreen() {
         saveCurrentThreadSnapshot()
 
         streamJob = scope.launch {
+            var completedCleanly = false
             runCatching {
                 withContext(Dispatchers.IO) {
                     val endpoint = URL("${normalizeHost(config.hostUrl)}/api/generate")
@@ -752,7 +868,7 @@ fun ChatScreen() {
                     }
                     val payload = JSONObject().apply {
                         put("model", modelToUse)
-                        put("prompt", combinedPrompt.ifBlank { "Analyze this image." })
+                        put("prompt", combinedPrompt.ifBlank { "Describe this image." })
                         put("stream", true)
                         put("keep_alive", config.keepAlive)
                         put("options", optionsJson)
@@ -805,7 +921,10 @@ fun ChatScreen() {
                                         }
                                     }
                                 }
-                                if (chunk.optBoolean("done", false)) break
+                                if (chunk.optBoolean("done", false)) {
+                                    completedCleanly = true
+                                    break
+                                }
                             }
                         }
                     } finally {
@@ -816,6 +935,15 @@ fun ChatScreen() {
                 if (err !is kotlinx.coroutines.CancellationException) {
                     bannerError = err.message ?: "Generation stopped with an error"
                 }
+            }
+
+            if (completedCleanly && assistantIdx in messages.indices) {
+                val finalText = messages[assistantIdx].content
+                val (summary, zipPath) = writeFilesAndOptionalZip(context, finalText, config.autoBundleZip)
+                messages[assistantIdx] = messages[assistantIdx].copy(
+                    changeSummary = summary,
+                    bundleZipPath = zipPath
+                )
             }
 
             streaming = false
@@ -851,13 +979,13 @@ fun ChatScreen() {
                     }
                 },
                 actions = {
-                    IconButton(onClick = { applyMaxSpeedPreset() }) {
-                        Icon(Icons.Default.Bolt, contentDescription = "Max speed preset", tint = WarmPeach)
+                    IconButton(onClick = { applyBalancedMaxSpeed() }) {
+                        Icon(Icons.Default.Bolt, contentDescription = "Fast safe performance", tint = WarmPeach)
                     }
                     IconButton(onClick = { historyOpen = true }) {
                         Icon(Icons.Default.History, contentDescription = "Chat history")
                     }
-                    IconButton(onClick = { refreshModels() }) {
+                    IconButton(onClick = { refreshModels(preferFastModel = false) }) {
                         Icon(Icons.Default.Refresh, contentDescription = "Refresh models")
                     }
                     IconButton(onClick = { startNewThread() }) {
@@ -929,8 +1057,9 @@ fun ChatScreen() {
                             color = WarmPeach
                         )
                         Spacer(modifier = Modifier.width(10.dp))
+                        val lineLabel = if (config.lineCheckpointTracker) "Line $checkpointLine • " else ""
                         Text(
-                            text = "Line $checkpointLine • ${elapsedSec}s / ~${estimatedTotalSec}s est.",
+                            text = "${lineLabel}${elapsedSec}s / ~${estimatedTotalSec}s est.",
                             style = MaterialTheme.typography.labelMedium,
                             color = MaterialTheme.colorScheme.onSurface
                         )
@@ -1116,7 +1245,7 @@ fun ChatScreen() {
                                 .clickable {
                                     streamJob?.cancel()
                                     streaming = false
-                                    statusNote = "Cancelled generation at line $checkpointLine"
+                                    statusNote = "Cancelled at line $checkpointLine"
                                     saveCurrentThreadSnapshot()
                                 }
                         ) {
@@ -1235,6 +1364,7 @@ fun ChatScreen() {
         var keepAliveDraft by rememberSaveable { mutableStateOf(config.keepAlive) }
         var conciseFlag by rememberSaveable { mutableStateOf(config.conciseDiffMode) }
         var singleHtmlFlag by rememberSaveable { mutableStateOf(config.singleHtmlAppMode) }
+        var zipFlag by rememberSaveable { mutableStateOf(config.autoBundleZip) }
         var checkpointFlag by rememberSaveable { mutableStateOf(config.lineCheckpointTracker) }
         var rateVal by rememberSaveable { mutableStateOf(config.speechRate) }
         var pitchVal by rememberSaveable { mutableStateOf(config.speechPitch) }
@@ -1269,7 +1399,7 @@ fun ChatScreen() {
                         }
                         OutlinedButton(
                             onClick = {
-                                applyMaxSpeedPreset()
+                                applyBalancedMaxSpeed()
                                 coresVal = config.cpuCores.toFloat()
                                 gpuVal = config.gpuLayers.toFloat()
                                 maxTokensText = config.maxTokens.toString()
@@ -1284,14 +1414,14 @@ fun ChatScreen() {
                         ) {
                             Icon(Icons.Default.Bolt, contentDescription = null)
                             Spacer(modifier = Modifier.width(4.dp))
-                            Text("Max Speed")
+                            Text("Fast Safe")
                         }
                     }
 
                     HorizontalDivider()
 
                     Text(
-                        text = "Requested CPU Cores / Threads: ${coresVal.toInt()}",
+                        text = "CPU Threads (Balanced): ${coresVal.toInt()}",
                         style = MaterialTheme.typography.bodyMedium,
                         fontWeight = FontWeight.Medium
                     )
@@ -1334,7 +1464,7 @@ fun ChatScreen() {
                     OutlinedTextField(
                         value = keepAliveDraft,
                         onValueChange = { keepAliveDraft = it },
-                        label = { Text("Keep Model Loaded (keep_alive, e.g. 15m or -1)") },
+                        label = { Text("Keep Model Loaded (keep_alive)") },
                         singleLine = true,
                         modifier = Modifier.fillMaxWidth()
                     )
@@ -1394,6 +1524,21 @@ fun ChatScreen() {
                         verticalAlignment = Alignment.CenterVertically
                     ) {
                         Column(modifier = Modifier.weight(1f)) {
+                            Text("Auto-ZIP Multi-File Output", fontWeight = FontWeight.Medium)
+                            Text(
+                                "Saves code blocks into files & zips 2+ files automatically",
+                                style = MaterialTheme.typography.labelSmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        }
+                        Switch(checked = zipFlag, onCheckedChange = { zipFlag = it })
+                    }
+
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Column(modifier = Modifier.weight(1f)) {
                             Text("Line Checkpoint Status (1, 10, 20...)", fontWeight = FontWeight.Medium)
                             Text(
                                 "Shows live line checkpoints & time estimate while generating",
@@ -1443,6 +1588,7 @@ fun ChatScreen() {
                             keepAlive = keepAliveDraft.trim().ifBlank { "15m" },
                             conciseDiffMode = conciseFlag,
                             singleHtmlAppMode = singleHtmlFlag,
+                            autoBundleZip = zipFlag,
                             lineCheckpointTracker = checkpointFlag,
                             speechRate = rateVal,
                             speechPitch = pitchVal
@@ -1615,7 +1761,7 @@ private fun StarterDeck(
 ) {
     val starters = listOf(
         "Break down a tricky problem step by step",
-        "Write clean code and explain only changed lines",
+        "Write clean C++ or Kotlin code and show only changed lines",
         "Build a single-file HTML/JS web app"
     )
     Column(
@@ -1701,6 +1847,37 @@ private fun BubbleCard(
                     text = entry.content.ifEmpty { "…" },
                     style = MaterialTheme.typography.bodyMedium
                 )
+                if (!isUser && entry.changeSummary != null) {
+                    Spacer(modifier = Modifier.height(8.dp))
+                    HorizontalDivider(color = Color(0xFF323746))
+                    Spacer(modifier = Modifier.height(6.dp))
+                    Text(
+                        text = "What changed: ${entry.changeSummary}",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = WarmPeach
+                    )
+                    if (entry.bundleZipPath != null) {
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            modifier = Modifier.padding(top = 4.dp)
+                        ) {
+                            Icon(
+                                Icons.Default.FolderZip,
+                                contentDescription = null,
+                                tint = SkyBlue,
+                                modifier = Modifier.size(14.dp)
+                            )
+                            Spacer(modifier = Modifier.width(4.dp))
+                            Text(
+                                text = "ZIP created: ${entry.bundleZipPath}",
+                                style = MaterialTheme.typography.labelSmall,
+                                color = SkyBlue,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis
+                            )
+                        }
+                    }
+                }
             }
         }
 
