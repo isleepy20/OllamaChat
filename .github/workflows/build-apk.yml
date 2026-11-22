@@ -2,49 +2,67 @@ name: Build Signed Debug APK
 
 on:
   push:
-    branches: [ "**" ]
+    branches: ["**"]
   workflow_dispatch:
+
+permissions:
+  contents: read
 
 jobs:
   build:
     runs-on: ubuntu-latest
 
-    env:
-      ANDROID_HOME: /usr/local/lib/android/sdk
-      ANDROID_SDK_ROOT: /usr/local/lib/android/sdk
-      GRADLE_OPTS: "-Dorg.gradle.daemon=false -Dfile.encoding=UTF-8"
-
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v7
+        uses: actions/checkout@v4
 
       - name: Set up JDK 17
-        uses: actions/setup-java@v6
+        uses: actions/setup-java@v4
         with:
           distribution: temurin
           java-version: "17"
 
-      - name: Install Android SDK packages and accept licenses
-        run: |
-          SDKMANAGER=$(find "$ANDROID_HOME/cmdline-tools" -name "sdkmanager" -type f | sort -V | tail -n 1)
-          yes | "$SDKMANAGER" --sdk_root="$ANDROID_HOME" --licenses > /dev/null || true
-          "$SDKMANAGER" --sdk_root="$ANDROID_HOME" "platform-tools" "platforms;android-34" "build-tools;34.0.0"
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v3
 
-      - name: Build debug APK
+      - name: Accept Android SDK licenses and install required packages
+        shell: bash
         run: |
-          chmod +x ./gradlew || true
-          if [ -x ./gradlew ]; then
-            ./gradlew assembleDebug --stacktrace
-          else
-            gradle assembleDebug --stacktrace
+          set +e
+          yes | sdkmanager --licenses
+          license_status=${PIPESTATUS[1]}
+          set -e
+          if [[ "$license_status" -ne 0 ]]; then
+            echo "Android SDK license acceptance failed." >&2
+            exit "$license_status"
           fi
+          sdkmanager --install "platform-tools" "platforms;android-34" "build-tools;34.0.0"
 
-      - name: Find generated APK files
-        run: find . -type f -name "*.apk" -print
+      - name: Set up Gradle 8.7
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: "8.7"
+
+      - name: Build signed debug APK from repository root
+        run: gradle :app:assembleDebug --stacktrace
+
+      - name: Verify and list generated APK files
+        shell: bash
+        run: |
+          mapfile -t apks < <(find app/build/outputs/apk -type f -name '*.apk' -print)
+          if (( ${#apks[@]} == 0 )); then
+            echo "No APK was generated under app/build/outputs/apk." >&2
+            exit 1
+          fi
+          for apk in "${apks[@]}"; do
+            test -s "$apk"
+            printf '%s\n' "$apk"
+          done
 
       - name: Upload signed debug APK
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@v4
         with:
           name: app-debug-apk
-          path: "**/outputs/apk/**/*.apk"
+          path: '**/outputs/apk/**/*.apk'
           if-no-files-found: error
+          compression-level: 0
