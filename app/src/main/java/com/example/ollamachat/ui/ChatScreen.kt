@@ -3,6 +3,7 @@ package com.example.ollamachat.ui
 import android.content.ClipData
 import android.content.ClipboardManager
 import android.content.Context
+import android.content.Intent
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
 import android.net.Uri
@@ -10,6 +11,7 @@ import android.net.wifi.WifiManager
 import android.provider.OpenableColumns
 import android.speech.tts.TextToSpeech
 import android.speech.tts.Voice
+import android.widget.Toast
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.Image
@@ -52,12 +54,14 @@ import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.ContentCopy
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Description
+import androidx.compose.material.icons.filled.Download
 import androidx.compose.material.icons.filled.FolderZip
 import androidx.compose.material.icons.filled.History
 import androidx.compose.material.icons.filled.Image
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.Settings
+import androidx.compose.material.icons.filled.Share
 import androidx.compose.material.icons.filled.VolumeOff
 import androidx.compose.material.icons.filled.VolumeUp
 import androidx.compose.material3.AlertDialog
@@ -177,7 +181,7 @@ private data class StudioConfig(
     val autoBundleZip: Boolean = true,
     val lineCheckpointTracker: Boolean = true,
     val speechRate: Float = 1.0f,
-    val speechPitch: Float = 1.08f
+    val speechPitch: Float = 1.04f
 )
 
 private fun loadConfig(context: Context): StudioConfig {
@@ -196,7 +200,7 @@ private fun loadConfig(context: Context): StudioConfig {
         autoBundleZip = prefs.getBoolean("auto_bundle_zip", true),
         lineCheckpointTracker = prefs.getBoolean("line_checkpoint", true),
         speechRate = prefs.getFloat("speech_rate", 1.0f).coerceIn(0.6f, 1.6f),
-        speechPitch = prefs.getFloat("speech_pitch", 1.08f).coerceIn(0.75f, 1.35f)
+        speechPitch = prefs.getFloat("speech_pitch", 1.04f).coerceIn(0.75f, 1.30f)
     )
 }
 
@@ -432,6 +436,39 @@ private fun createTempPhotoUri(context: Context): Uri? {
     }.getOrNull()
 }
 
+private fun shareZipFile(context: Context, zipPath: String) {
+    runCatching {
+        val file = File(zipPath)
+        if (!file.exists()) {
+            Toast.makeText(context, "ZIP file not found", Toast.LENGTH_SHORT).show()
+            return
+        }
+        val uri = FileProvider.getUriForFile(context, "${context.packageName}.fileprovider", file)
+        val intent = Intent(Intent.ACTION_SEND).apply {
+            type = "application/zip"
+            putExtra(Intent.EXTRA_STREAM, uri)
+            addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+        }
+        context.startActivity(Intent.createChooser(intent, "Share ZIP"))
+    }.onFailure {
+        Toast.makeText(context, "Could not share ZIP: ${it.message}", Toast.LENGTH_SHORT).show()
+    }
+}
+
+private fun copyZipToUri(context: Context, sourceZipPath: String, destinationUri: Uri): Boolean {
+    return runCatching {
+        val src = File(sourceZipPath)
+        if (!src.exists()) return@runCatching false
+        context.contentResolver.openOutputStream(destinationUri)?.use { out ->
+            FileInputStream(src).use { input ->
+                input.copyTo(out)
+            }
+            out.flush()
+        } ?: return@runCatching false
+        true
+    }.getOrDefault(false)
+}
+
 private fun inspectAttachment(context: Context, uri: Uri): AttachmentPreview {
     var displayName = "attachment"
     var sizeBytes = 0L
@@ -536,7 +573,8 @@ private fun writeFilesAndOptionalZip(
 
         val ext = when (lang) {
             "cpp", "c++", "cc", "cxx" -> "cpp"
-            "h", "hpp" -> "hpp"
+            "c" -> "c"
+            "h", "hpp", "hxx" -> "hpp"
             "html", "htm" -> "html"
             "kt", "kotlin" -> "kt"
             "py", "python" -> "py"
@@ -587,19 +625,22 @@ private fun writeFilesAndOptionalZip(
     return summary to zipPath
 }
 
-private fun selectFemaleVoice(tts: TextToSpeech): Voice? {
+private fun selectNaturalFemaleVoice(tts: TextToSpeech): Voice? {
     val voices = runCatching { tts.voices }.getOrNull() ?: return null
-    val femaleHints = listOf("female", "woman", "en-us-x-sfg", "en-us-x-tpf", "en-gb-x-gba", "en-gb-x-gbc")
-    return voices.firstOrNull { v ->
-        !v.isNetworkConnectionRequired &&
-            v.locale.language == Locale.ENGLISH.language &&
-            femaleHints.any { hint -> v.name.lowercase(Locale.ROOT).contains(hint) }
-    } ?: voices.firstOrNull { v ->
-        v.locale.language == Locale.ENGLISH.language &&
-            femaleHints.any { hint -> v.name.lowercase(Locale.ROOT).contains(hint) }
-    } ?: voices.firstOrNull { v ->
-        v.locale.language == Locale.ENGLISH.language && !v.isNetworkConnectionRequired
-    }
+    val femaleHints = listOf(
+        "female", "woman", "en-us-x-sfg", "en-us-x-tpf", "en-us-x-iol",
+        "en-gb-x-gba", "en-gb-x-gbc", "natural"
+    )
+    return voices
+        .filter { it.locale.language == Locale.ENGLISH.language }
+        .sortedByDescending { v ->
+            val nameLow = v.name.lowercase(Locale.ROOT)
+            val femaleScore = if (femaleHints.any { nameLow.contains(it) }) 10 else 0
+            val qualityScore = v.quality
+            val offlineBonus = if (!v.isNetworkConnectionRequired) 2 else 0
+            femaleScore + qualityScore + offlineBonus
+        }
+        .firstOrNull()
 }
 
 private fun formatLineCheckpoint(lineCount: Int): Int {
@@ -625,12 +666,14 @@ fun ChatScreen() {
     var attachment by remember { mutableStateOf<AttachmentPreview?>(null) }
     var plusMenuOpen by remember { mutableStateOf(false) }
     var pendingPhotoUri by remember { mutableStateOf<Uri?>(null) }
+    var pendingZipExportPath by rememberSaveable { mutableStateOf<String?>(null) }
 
     var streaming by remember { mutableStateOf(false) }
     var streamJob by remember { mutableStateOf<Job?>(null) }
     var elapsedSec by remember { mutableStateOf(0) }
     var estimatedTotalSec by remember { mutableStateOf(0) }
     var checkpointLine by remember { mutableStateOf(0) }
+    var userScrolledAway by rememberSaveable { mutableStateOf(false) }
 
     var bannerError by remember { mutableStateOf<String?>(null) }
     var statusNote by remember { mutableStateOf<String?>(null) }
@@ -646,7 +689,7 @@ fun ChatScreen() {
         instance = TextToSpeech(context) { status ->
             if (status == TextToSpeech.SUCCESS) {
                 instance?.language = Locale.US
-                selectFemaleVoice(instance!!)?.let { instance?.voice = it }
+                selectNaturalFemaleVoice(instance!!)?.let { instance?.voice = it }
                 instance?.setSpeechRate(config.speechRate)
                 instance?.setPitch(config.speechPitch)
                 ttsReady = true
@@ -671,6 +714,22 @@ fun ChatScreen() {
             while (streaming) {
                 delay(1000L)
                 elapsedSec += 1
+            }
+        }
+    }
+
+    val createZipDocLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.CreateDocument("application/zip")
+    ) { destUri ->
+        val srcPath = pendingZipExportPath
+        pendingZipExportPath = null
+        if (destUri != null && srcPath != null) {
+            val saved = copyZipToUri(context, srcPath, destUri)
+            if (saved) {
+                statusNote = "Saved ZIP to selected folder"
+                Toast.makeText(context, "Saved ZIP to device storage", Toast.LENGTH_SHORT).show()
+            } else {
+                bannerError = "Failed to write ZIP to selected storage location"
             }
         }
     }
@@ -752,6 +811,7 @@ fun ChatScreen() {
         saveCurrentThreadSnapshot()
         streamJob?.cancel()
         streaming = false
+        userScrolledAway = false
         activeThreadId = UUID.randomUUID().toString()
         messages.clear()
         attachment = null
@@ -762,6 +822,7 @@ fun ChatScreen() {
         saveCurrentThreadSnapshot()
         streamJob?.cancel()
         streaming = false
+        userScrolledAway = false
         activeThreadId = thread.id
         messages.clear()
         messages.addAll(thread.messages)
@@ -799,9 +860,15 @@ fun ChatScreen() {
     }
 
     val listState = rememberLazyListState()
-    val tailLen = messages.lastOrNull()?.content?.length ?: 0
-    LaunchedEffect(messages.size, tailLen) {
-        if (messages.isNotEmpty()) listState.scrollToItem(messages.lastIndex)
+    LaunchedEffect(listState.isScrollInProgress) {
+        if (listState.isScrollInProgress) {
+            userScrolledAway = true
+        }
+    }
+    LaunchedEffect(messages.size) {
+        if (messages.isNotEmpty() && !userScrolledAway) {
+            listState.scrollToItem(messages.lastIndex)
+        }
     }
 
     fun sendPrompt() {
@@ -809,13 +876,13 @@ fun ChatScreen() {
         val att = attachment
         if (rawText.isEmpty() && att == null) return
 
-        val modelToUse = selectedModel ?: models.firstOrNull() ?: "qwen3.5:4b"
+        val modelToUse = selectedModel ?: models.firstOrNull() ?: "qwen2.5-coder:3b"
         val combinedPrompt = buildString {
             if (config.singleHtmlAppMode) {
                 append("[Format Rule: Output ONE complete single-file HTML/CSS/JS app instead of splitting into many files.]\n")
             }
             if (config.conciseDiffMode) {
-                append("[Format Rule: State exact target file/path and show only changed or essential lines to save tokens.]\n")
+                append("[Format Rule: For code, state exact target file/path (such as .cpp/.hpp/.html) and show only changed or essential lines with brief line notes; keep normal chat outside code natural and concise.]\n")
             }
             if (rawText.isNotEmpty()) {
                 append("\n").append(rawText)
@@ -832,6 +899,7 @@ fun ChatScreen() {
             else -> ""
         }
 
+        userScrolledAway = false
         messages.add(
             ChatEntry(
                 id = UUID.randomUUID().toString(),
@@ -1122,18 +1190,26 @@ fun ChatScreen() {
                                 val cm = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
                                 cm.setPrimaryClip(ClipData.newPlainText("message", msg.content))
                                 statusNote = "Copied message"
+                                Toast.makeText(context, "Copied to clipboard", Toast.LENGTH_SHORT).show()
                             },
                             onToggleSpeak = {
                                 if (isSpeakingThis) {
                                     tts.stop()
                                     speakingMessageId = null
                                 } else if (ttsReady && msg.content.isNotBlank()) {
-                                    selectFemaleVoice(tts)?.let { tts.voice = it }
+                                    selectNaturalFemaleVoice(tts)?.let { tts.voice = it }
                                     tts.setSpeechRate(config.speechRate)
                                     tts.setPitch(config.speechPitch)
                                     tts.speak(msg.content, TextToSpeech.QUEUE_FLUSH, null, msg.id)
                                     speakingMessageId = msg.id
                                 }
+                            },
+                            onSaveZipToStorage = { zipPath ->
+                                pendingZipExportPath = zipPath
+                                createZipDocLauncher.launch(File(zipPath).name)
+                            },
+                            onShareZip = { zipPath ->
+                                shareZipFile(context, zipPath)
                             }
                         )
                     }
@@ -1568,7 +1644,7 @@ fun ChatScreen() {
                     Slider(
                         value = pitchVal,
                         onValueChange = { pitchVal = it },
-                        valueRange = 0.85f..1.30f
+                        valueRange = 0.85f..1.25f
                     )
                 }
             },
@@ -1805,7 +1881,9 @@ private fun BubbleCard(
     entry: ChatEntry,
     isSpeaking: Boolean,
     onCopy: () -> Unit,
-    onToggleSpeak: () -> Unit
+    onToggleSpeak: () -> Unit,
+    onSaveZipToStorage: (String) -> Unit,
+    onShareZip: (String) -> Unit
 ) {
     val isUser = entry.role == "user"
     Column(
@@ -1859,22 +1937,45 @@ private fun BubbleCard(
                     if (entry.bundleZipPath != null) {
                         Row(
                             verticalAlignment = Alignment.CenterVertically,
-                            modifier = Modifier.padding(top = 4.dp)
+                            modifier = Modifier.padding(top = 6.dp)
                         ) {
                             Icon(
                                 Icons.Default.FolderZip,
                                 contentDescription = null,
                                 tint = SkyBlue,
-                                modifier = Modifier.size(14.dp)
+                                modifier = Modifier.size(15.dp)
                             )
-                            Spacer(modifier = Modifier.width(4.dp))
+                            Spacer(modifier = Modifier.width(5.dp))
                             Text(
-                                text = "ZIP created: ${entry.bundleZipPath}",
+                                text = File(entry.bundleZipPath).name,
                                 style = MaterialTheme.typography.labelSmall,
                                 color = SkyBlue,
                                 maxLines = 1,
-                                overflow = TextOverflow.Ellipsis
+                                overflow = TextOverflow.Ellipsis,
+                                modifier = Modifier.weight(1f)
                             )
+                        }
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(8.dp),
+                            modifier = Modifier.padding(top = 2.dp)
+                        ) {
+                            TextButton(
+                                onClick = { onSaveZipToStorage(entry.bundleZipPath) },
+                                contentPadding = PaddingValues(horizontal = 6.dp, vertical = 0.dp)
+                            ) {
+                                Icon(Icons.Default.Download, contentDescription = null, modifier = Modifier.size(14.dp))
+                                Spacer(modifier = Modifier.width(4.dp))
+                                Text("Save ZIP", style = MaterialTheme.typography.labelSmall)
+                            }
+                            TextButton(
+                                onClick = { onShareZip(entry.bundleZipPath) },
+                                contentPadding = PaddingValues(horizontal = 6.dp, vertical = 0.dp)
+                            ) {
+                                Icon(Icons.Default.Share, contentDescription = null, modifier = Modifier.size(14.dp))
+                                Spacer(modifier = Modifier.width(4.dp))
+                                Text("Share", style = MaterialTheme.typography.labelSmall)
+                            }
                         }
                     }
                 }
