@@ -1,4 +1,4 @@
-name: Build Signed Debug APK
+name: Build Debug APK
 
 on:
   push:
@@ -15,30 +15,35 @@ jobs:
       GRADLE_OPTS: "-Dorg.gradle.daemon=false -Dfile.encoding=UTF-8"
 
     steps:
-      - name: Checkout repository
-        uses: actions/checkout@v6
+      - name: Checkout code
+        uses: actions/checkout@v4
 
       - name: Set up JDK 17
-        uses: actions/setup-java@v5
+        uses: actions/setup-java@v4
         with:
           distribution: temurin
           java-version: "17"
 
-      - name: Install Android SDK packages and accept licenses
+      - name: Accept Android SDK licenses
         run: |
           SDKMANAGER=$(find "$ANDROID_HOME/cmdline-tools" -name "sdkmanager" -type f | sort -V | tail -n 1)
           yes | "$SDKMANAGER" --sdk_root="$ANDROID_HOME" --licenses > /dev/null || true
-          "$SDKMANAGER" --sdk_root="$ANDROID_HOME" "platform-tools" "platforms;android-34" "build-tools;34.0.0"
 
-      - name: Build debug APK
-        run: gradle assembleDebug --stacktrace
+      - name: Run Gradle assembleDebug
+        run: |
+          chmod +x ./gradlew || true
+          if [ -x ./gradlew ]; then
+            ./gradlew assembleDebug --stacktrace
+          else
+            gradle assembleDebug --stacktrace
+          fi
 
-      - name: Check generated APKs
-        run: find . -type f -name "*.apk" -ls || true
+      - name: Find generated APK files
+        run: find . -type f -name "*.apk" -print
 
-      - name: Upload debug APK if present
+      - name: Upload debug APK
         uses: actions/upload-artifact@v4
         with:
-          name: app-debug-apk
+          name: OllamaChat-debug-apk
           path: "**/outputs/apk/**/*.apk"
-          if-no-files-found: warn
+          if-no-files-found: error
