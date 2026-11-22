@@ -103,7 +103,11 @@ class OllamaApi {
         }
 
     private fun parseObject(line: String): JSONObject? =
-        try { JSONObject(line) } catch (e: JSONException) { null }
+        try {
+            JSONObject(line)
+        } catch (e: JSONException) {
+            null
+        }
 
     /** Emits each non-blank line of the response body as it arrives; cancels the call if collection is cancelled. */
     private fun streamLines(request: Request): Flow<String> = flow {
@@ -121,9 +125,8 @@ class OllamaApi {
                 if (!resp.isSuccessful) throw OllamaException(httpError(resp))
                 val source = resp.body?.source() ?: throw OllamaException("Empty response from server.")
                 while (true) {
-                    var line: String? = null
-                    try {
-                        line = source.readUtf8Line()
+                    val line = try {
+                        source.readUtf8Line()
                     } catch (e: IOException) {
                         throw OllamaException("Connection lost: " + describe(e))
                     }
@@ -137,9 +140,21 @@ class OllamaApi {
     }.flowOn(Dispatchers.IO)
 
     private fun httpError(resp: Response): String {
-        val raw = try { resp.body?.string().orEmpty() } catch (e: IOException) { "" }
-        val detail = try { JSONObject(raw).optString("error") } catch (e: JSONException) { "" }
-        return if (detail.isNotBlank()) "Server error ${resp.code}: $detail" else "Server error: HTTP ${resp.code}"
+        val raw = try {
+            resp.body?.string().orEmpty()
+        } catch (e: IOException) {
+            ""
+        }
+        val detail = try {
+            JSONObject(raw).optString("error")
+        } catch (e: JSONException) {
+            ""
+        }
+        return if (detail.isNotBlank()) {
+            "Server error ${resp.code}: $detail"
+        } else {
+            "Server error: HTTP ${resp.code}"
+        }
     }
 
     private fun describe(e: IOException): String = when (e) {
