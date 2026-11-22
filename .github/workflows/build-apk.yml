@@ -17,7 +17,7 @@ jobs:
         uses: actions/checkout@v4
 
       - name: Set up JDK 17
-        uses: actions/setup-java@v4
+        uses: actions/setup-java@v5
         with:
           distribution: temurin
           java-version: "17"
@@ -81,7 +81,7 @@ jobs:
 
           echo "Found compiled APK to align: $APK_PATH"
           APK_DIR=$(dirname "$APK_PATH")
-          
+
           "$ZIPALIGN_BIN" -v -p 4 "$APK_PATH" "$APK_DIR/app-aligned.apk"
           "$ZIPALIGN_BIN" -c -v 4 "$APK_DIR/app-aligned.apk"
 
