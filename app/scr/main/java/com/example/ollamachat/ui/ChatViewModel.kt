@@ -98,9 +98,11 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
                         models = list,
                         selectedModel = chosen,
                         loadingModels = false,
-                        connectionError = if (list.isEmpty())
+                        connectionError = if (list.isEmpty()) {
                             "Connected, but no models are installed yet. Download one in Settings."
-                        else null
+                        } else {
+                            null
+                        }
                     )
                 }
                 store.setSelectedModel(chosen)
@@ -130,7 +132,9 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
     fun pullModel(raw: String) {
         val name = raw.trim()
         if (name.isEmpty()) {
-            _state.update { it.copy(pull = it.pull.copy(error = "Enter a model name, e.g. llama3.2 or qwen2.5:14b")) }
+            _state.update {
+                it.copy(pull = it.pull.copy(error = "Enter a model name, e.g. llama3.2 or qwen2.5:14b"))
+            }
             return
         }
         if (_state.value.pull.active) return
@@ -139,7 +143,12 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
             try {
                 api.pull(_state.value.baseUrl, name).collect { p ->
                     _state.update {
-                        it.copy(pull = it.pull.copy(status = p.status.ifBlank { it.pull.status }, fraction = p.fraction))
+                        it.copy(
+                            pull = it.pull.copy(
+                                status = p.status.ifBlank { it.pull.status },
+                                fraction = p.fraction
+                            )
+                        )
                     }
                 }
                 _state.update { it.copy(pull = PullUiState(model = name, status = "Download complete: $name")) }
@@ -169,7 +178,9 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
         if (s.streaming) return false
         val model = s.selectedModel
         if (model.isNullOrBlank()) {
-            _state.update { it.copy(chatError = "No model selected. Open Settings to refresh or download a model.") }
+            _state.update {
+                it.copy(chatError = "No model selected. Open Settings to refresh or download a model.")
+            }
             return false
         }
         val userMsg = ChatMessage(nextId++, "user", content)
@@ -195,7 +206,9 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
                 _state.update { st ->
                     st.copy(
                         streaming = false,
-                        messages = st.messages.filterNot { it.id == assistantMsg.id && it.content.isEmpty() }
+                        messages = st.messages.filterNot {
+                            it.id == assistantMsg.id && it.content.isEmpty()
+                        }
                     )
                 }
             }
@@ -205,7 +218,9 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
 
     private fun appendToMessage(id: Long, text: String) {
         _state.update { st ->
-            st.copy(messages = st.messages.map { if (it.id == id) it.copy(content = it.content + text) else it })
+            st.copy(messages = st.messages.map {
+                if (it.id == id) it.copy(content = it.content + text) else it
+            })
         }
     }
 
