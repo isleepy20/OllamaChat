@@ -7,6 +7,7 @@ import android.content.Context
 import android.content.Intent
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
+import android.media.MediaMetadataRetriever
 import android.media.MediaPlayer
 import android.net.Uri
 import android.net.wifi.WifiManager
@@ -83,6 +84,7 @@ import androidx.compose.material3.FilterChip
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
+import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
@@ -117,6 +119,8 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.window.Dialog
+import androidx.compose.ui.window.DialogProperties
 import androidx.core.content.FileProvider
 import java.io.BufferedInputStream
 import java.io.BufferedOutputStream
@@ -195,6 +199,135 @@ private data class StudioConfig(
     val voiceServerUrl: String = "",
     val voiceClipName: String = ""
 )
+
+private fun estimateTokensPerSec(charCount: Int, elapsedSec: Int): Float {
+    if (elapsedSec <= 0 || charCount <= 0) return 0f
+    val approxTokens = charCount / 4f
+    return approxTokens / elapsedSec.toFloat()
+}
+
+private fun estimateCompletionPercent(
+    elapsedSec: Int,
+    estimatedTotalSec: Int,
+    isFinished: Boolean
+): Int {
+    if (isFinished) return 100
+    val safeTotal = estimatedTotalSec.coerceAtLeast(1)
+    val raw = ((elapsedSec.toFloat() / safeTotal.toFloat()) * 95f).toInt()
+    return raw.coerceIn(1, 95)
+}
+
+private fun readMediaDurationSeconds(context: Context, uri: Uri): Double {
+    val retriever = MediaMetadataRetriever()
+    return try {
+        retriever.setDataSource(context, uri)
+        val ms = retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_DURATION)?.toLongOrNull() ?: 0L
+        ms / 1000.0
+    } catch (_: Exception) {
+        0.0
+    } finally {
+        runCatching { retriever.release() }
+    }
+}
+
+private fun exportTextFallbackToDownloads(
+    context: Context,
+    baseName: String,
+    content: String
+): String? {
+    val cleanBase = baseName
+        .substringBeforeLast('.')
+        .replace(Regex("[^a-zA-Z0-9_-]"), "_")
+        .ifBlank { "exported_file" }
+    val tempTxt = File(context.cacheDir, "${cleanBase}_${System.currentTimeMillis()}.txt")
+    return runCatching {
+        FileOutputStream(tempTxt).use { out ->
+            out.write(content.toByteArray(Charsets.UTF_8))
+            out.flush()
+        }
+        saveZipDirectToDownloads(context, tempTxt.absolutePath)
+    }.getOrNull()
+}
+
+@Composable
+internal fun BlockingVoiceCloneTimerDialog(
+    clipName: String,
+    totalSeconds: Int = 180,
+    remainingSeconds: Int,
+    completed: Boolean,
+    onDismissWhenCompleted: () -> Unit
+) {
+    val safeTotal = totalSeconds.coerceAtLeast(1)
+    val clampedRemaining = remainingSeconds.coerceIn(0, safeTotal)
+    val progress = 1f - (clampedRemaining.toFloat() / safeTotal.toFloat())
+    val mins = clampedRemaining / 60
+    val secs = clampedRemaining % 60
+
+    Dialog(
+        onDismissRequest = {
+            if (completed && clampedRemaining == 0) onDismissWhenCompleted()
+        },
+        properties = DialogProperties(
+            dismissOnBackPress = false,
+            dismissOnClickOutside = false
+        )
+    ) {
+        Surface(
+            shape = RoundedCornerShape(20.dp),
+            color = MaterialTheme.colorScheme.surface,
+            modifier = Modifier.fillMaxWidth()
+        ) {
+            Column(
+                modifier = Modifier.padding(24.dp),
+                horizontalAlignment = Alignment.CenterHorizontally,
+                verticalArrangement = Arrangement.spacedBy(14.dp)
+            ) {
+                Text(
+                    text = if (completed && clampedRemaining == 0) {
+                        "Completed voice cloning"
+                    } else {
+                        "Cloning Voice Profile — Stay on Screen"
+                    },
+                    fontWeight = FontWeight.Bold,
+                    style = MaterialTheme.typography.titleMedium
+                )
+                Text(
+                    text = if (completed && clampedRemaining == 0) {
+                        "Profile locked for \"$clipName\". You can now send messages and cache speech."
+                    } else {
+                        "Keep this screen open while \"$clipName\" processes so background tasks don't slow it down."
+                    },
+                    style = MaterialTheme.typography.bodySmall
+                )
+                Box(contentAlignment = Alignment.Center, modifier = Modifier.size(132.dp)) {
+                    CircularProgressIndicator(
+                        progress = { progress.coerceIn(0f, 1f) },
+                        modifier = Modifier.fillMaxSize(),
+                        strokeWidth = 8.dp
+                    )
+                    Text(
+                        text = "%d:%02d".format(mins, secs),
+                        style = MaterialTheme.typography.headlineSmall,
+                        fontWeight = FontWeight.Bold
+                    )
+                }
+                LinearProgressIndicator(
+                    progress = { progress.coerceIn(0f, 1f) },
+                    modifier = Modifier.fillMaxWidth()
+                )
+                Text(
+                    text = "${(progress * 100f).toInt().coerceIn(0, 100)}% complete",
+                    style = MaterialTheme.typography.labelMedium
+                )
+                if (completed && clampedRemaining == 0) {
+                    Button(onClick = onDismissWhenCompleted) {
+                        Text("Continue")
+                    }
+                }
+            }
+        }
+    }
+}
 
 private fun loadConfig(context: Context): StudioConfig {
     val prefs = context.getSharedPreferences("studio_prefs", Context.MODE_PRIVATE)
@@ -899,7 +1032,16 @@ fun ChatScreen() {
     var elapsedSec by remember { mutableStateOf(0) }
     var estimatedTotalSec by remember { mutableStateOf(0) }
     var checkpointLine by remember { mutableStateOf(0) }
+    var liveLineCount by remember { mutableStateOf(0) }
+    var liveTokensPerSec by remember { mutableStateOf(0f) }
+    var livePercent by remember { mutableStateOf(0) }
     var userScrolledAway by rememberSaveable { mutableStateOf(false) }
+
+    var cloneLockActive by rememberSaveable { mutableStateOf(false) }
+    var cloneTotalSeconds by rememberSaveable { mutableStateOf(180) }
+    var cloneRemainingSeconds by rememberSaveable { mutableStateOf(0) }
+    var cloneCompleted by rememberSaveable { mutableStateOf(false) }
+    var cloneTargetClipName by rememberSaveable { mutableStateOf("") }
 
     var bannerError by remember { mutableStateOf<String?>(null) }
     var statusNote by remember { mutableStateOf<String?>(null) }
@@ -952,11 +1094,39 @@ fun ChatScreen() {
         if (streaming) {
             elapsedSec = 0
             estimatedTotalSec = (config.maxTokens / 40).coerceIn(5, 90)
+            livePercent = 1
             while (streaming) {
                 delay(1000L)
                 elapsedSec += 1
+                livePercent = estimateCompletionPercent(elapsedSec, estimatedTotalSec, isFinished = false)
             }
         }
+    }
+
+    LaunchedEffect(cloneLockActive) {
+        if (cloneLockActive) {
+            cloneCompleted = false
+            while (cloneRemainingSeconds > 0) {
+                delay(1000L)
+                cloneRemainingSeconds = (cloneRemainingSeconds - 1).coerceAtLeast(0)
+            }
+            syncLockedProfileFromConfig(lockedVoiceManager, config)
+            cloneCompleted = true
+        }
+    }
+
+    if (cloneLockActive) {
+        BlockingVoiceCloneTimerDialog(
+            clipName = cloneTargetClipName.ifBlank { config.voiceClipName.ifBlank { "voice_clip" } },
+            totalSeconds = cloneTotalSeconds,
+            remainingSeconds = cloneRemainingSeconds,
+            completed = cloneCompleted,
+            onDismissWhenCompleted = {
+                cloneLockActive = false
+                cloneCompleted = false
+                statusNote = "Completed voice cloning"
+            }
+        )
     }
 
     val createZipDocLauncher = rememberLauncherForActivityResult(
@@ -1163,6 +1333,9 @@ fun ChatScreen() {
         attachment = null
         bannerError = null
         checkpointLine = 1
+        liveLineCount = 1
+        liveTokensPerSec = 0f
+        livePercent = 1
         streaming = true
         saveCurrentThreadSnapshot()
 
@@ -1227,8 +1400,13 @@ fun ChatScreen() {
                                     val snapshot = acc.toString()
                                     val lineCount = snapshot.count { it == '\n' } + 1
                                     val stepCheckpoint = formatLineCheckpoint(lineCount)
+                                    val tps = estimateTokensPerSec(snapshot.length, elapsedSec)
+                                    val pct = estimateCompletionPercent(elapsedSec, estimatedTotalSec, isFinished = false)
                                     withContext(Dispatchers.Main) {
                                         checkpointLine = stepCheckpoint
+                                        liveLineCount = lineCount
+                                        liveTokensPerSec = tps
+                                        livePercent = pct
                                         if (assistantIdx in messages.indices) {
                                             messages[assistantIdx] = messages[assistantIdx].copy(content = snapshot)
                                         }
@@ -1253,6 +1431,9 @@ fun ChatScreen() {
             if (completedCleanly && assistantIdx in messages.indices) {
                 val finalText = messages[assistantIdx].content
                 val (summary, zipPath) = writeFilesAndOptionalZip(context, finalText, config.autoBundleZip)
+                liveLineCount = finalText.count { it == '\n' } + 1
+                liveTokensPerSec = estimateTokensPerSec(finalText.length, elapsedSec)
+                livePercent = 100
                 messages[assistantIdx] = messages[assistantIdx].copy(
                     changeSummary = summary,
                     bundleZipPath = zipPath
@@ -1370,9 +1551,13 @@ fun ChatScreen() {
                             color = WarmPeach
                         )
                         Spacer(modifier = Modifier.width(10.dp))
-                        val lineLabel = if (config.lineCheckpointTracker) "Line $checkpointLine • " else ""
+                        val lineLabel = if (config.lineCheckpointTracker) {
+                            "Line $liveLineCount (ckpt $checkpointLine) • "
+                        } else {
+                            "Line $liveLineCount • "
+                        }
                         Text(
-                            text = "${lineLabel}${elapsedSec}s / ~${estimatedTotalSec}s est.",
+                            text = "${"%.1f".format(liveTokensPerSec)} tok/s • ${lineLabel}${livePercent}% • ${elapsedSec}s/~${estimatedTotalSec}s",
                             style = MaterialTheme.typography.labelMedium,
                             color = MaterialTheme.colorScheme.onSurface
                         )
@@ -1453,6 +1638,19 @@ fun ChatScreen() {
                                     onSpeakingStateChange = { speakingMessageId = it },
                                     onBannerError = { bannerError = it }
                                 )
+                            },
+                            onExportTxtToDownloads = { entry ->
+                                val saved = exportTextFallbackToDownloads(
+                                    context = context,
+                                    baseName = entry.attachmentName ?: "chat_${entry.id.take(8)}",
+                                    content = entry.content
+                                )
+                                if (saved != null) {
+                                    statusNote = "Exported .txt to $saved"
+                                    Toast.makeText(context, "Saved .txt to $saved", Toast.LENGTH_SHORT).show()
+                                } else {
+                                    bannerError = "Could not export .txt to Downloads"
+                                }
                             },
                             onDownloadZipToDownloads = { zipPath ->
                                 val savedLabel = saveZipDirectToDownloads(context, zipPath)
@@ -1714,6 +1912,16 @@ fun ChatScreen() {
                     ?: uri.lastPathSegment?.substringAfterLast('/')
                     ?: "reference_voice.wav"
                 voiceClipDraft = pickedName
+                val durationSec = readMediaDurationSeconds(context, uri)
+                if (durationSec in 15.0..30.0) {
+                    cloneTotalSeconds = 180
+                    cloneRemainingSeconds = 180
+                    cloneTargetClipName = pickedName
+                    cloneCompleted = false
+                    cloneLockActive = true
+                } else {
+                    statusNote = "Selected $pickedName (${"%.1f".format(durationSec)}s) — use 15–30s clip to trigger 3-min clone lock"
+                }
             }
         }
 
@@ -2253,6 +2461,7 @@ private fun BubbleCard(
     isSpeaking: Boolean,
     onCopy: () -> Unit,
     onToggleSpeak: () -> Unit,
+    onExportTxtToDownloads: (ChatEntry) -> Unit,
     onDownloadZipToDownloads: (String) -> Unit,
     onSaveZipAs: (String) -> Unit,
     onShareZip: (String) -> Unit
@@ -2392,16 +2601,16 @@ private fun BubbleCard(
             ) {
                 OutlinedButton(
                     onClick = onCopy,
-                    contentPadding = PaddingValues(horizontal = 14.dp, vertical = 8.dp),
+                    contentPadding = PaddingValues(horizontal = 12.dp, vertical = 8.dp),
                     modifier = Modifier.defaultMinSize(minHeight = 44.dp)
                 ) {
                     Icon(Icons.Default.ContentCopy, contentDescription = null, modifier = Modifier.size(16.dp))
-                    Spacer(modifier = Modifier.width(6.dp))
+                    Spacer(modifier = Modifier.width(4.dp))
                     Text("Copy", style = MaterialTheme.typography.labelMedium)
                 }
                 OutlinedButton(
                     onClick = onToggleSpeak,
-                    contentPadding = PaddingValues(horizontal = 14.dp, vertical = 8.dp),
+                    contentPadding = PaddingValues(horizontal = 12.dp, vertical = 8.dp),
                     modifier = Modifier.defaultMinSize(minHeight = 44.dp)
                 ) {
                     Icon(
@@ -2409,11 +2618,22 @@ private fun BubbleCard(
                         contentDescription = null,
                         modifier = Modifier.size(16.dp)
                     )
-                    Spacer(modifier = Modifier.width(6.dp))
+                    Spacer(modifier = Modifier.width(4.dp))
                     Text(
                         if (isSpeaking) "Stop TTS" else "Listen",
                         style = MaterialTheme.typography.labelMedium
                     )
+                }
+                if (!isUser) {
+                    OutlinedButton(
+                        onClick = { onExportTxtToDownloads(entry) },
+                        contentPadding = PaddingValues(horizontal = 12.dp, vertical = 8.dp),
+                        modifier = Modifier.defaultMinSize(minHeight = 44.dp)
+                    ) {
+                        Icon(Icons.Default.Download, contentDescription = null, modifier = Modifier.size(16.dp))
+                        Spacer(modifier = Modifier.width(4.dp))
+                        Text(".txt", style = MaterialTheme.typography.labelMedium)
+                    }
                 }
             }
         }
