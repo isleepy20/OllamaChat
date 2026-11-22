@@ -1,6 +1,7 @@
 package com.example.ollamachat.data
 
 import android.content.Context
+import androidx.datastore.preferences.core.booleanPreferencesKey
 import androidx.datastore.preferences.core.edit
 import androidx.datastore.preferences.core.floatPreferencesKey
 import androidx.datastore.preferences.core.stringPreferencesKey
@@ -17,6 +18,9 @@ class SettingsStore(context: Context) {
     val selectedModel: Flow<String?> = ds.data.map { it[KEY_MODEL] }
     val systemPrompt: Flow<String> = ds.data.map { it[KEY_SYSTEM] ?: "" }
     val temperature: Flow<Float> = ds.data.map { it[KEY_TEMP] ?: 0.7f }
+    val ttsServerUrl: Flow<String> = ds.data.map { it[KEY_TTS_URL] ?: DEFAULT_TTS_URL }
+    val voiceCloneEnabled: Flow<Boolean> = ds.data.map { it[KEY_VOICE_CLONE] ?: false }
+    val voiceSample: Flow<String> = ds.data.map { it[KEY_VOICE_SAMPLE] ?: "default" }
 
     suspend fun setBaseUrl(value: String) {
         ds.edit { it[KEY_URL] = value }
@@ -34,10 +38,27 @@ class SettingsStore(context: Context) {
         ds.edit { it[KEY_TEMP] = value }
     }
 
+    suspend fun setTtsServerUrl(value: String) {
+        ds.edit { it[KEY_TTS_URL] = value }
+    }
+
+    suspend fun setVoiceCloneEnabled(enabled: Boolean) {
+        ds.edit { it[KEY_VOICE_CLONE] = enabled }
+    }
+
+    suspend fun setVoiceSample(value: String) {
+        ds.edit { it[KEY_VOICE_SAMPLE] = value }
+    }
+
     private companion object {
+        const val DEFAULT_TTS_URL = "http://127.0.0.1:8020"
+
         val KEY_URL = stringPreferencesKey("base_url")
         val KEY_MODEL = stringPreferencesKey("selected_model")
         val KEY_SYSTEM = stringPreferencesKey("system_prompt")
         val KEY_TEMP = floatPreferencesKey("temperature")
+        val KEY_TTS_URL = stringPreferencesKey("tts_server_url")
+        val KEY_VOICE_CLONE = booleanPreferencesKey("voice_clone_enabled")
+        val KEY_VOICE_SAMPLE = stringPreferencesKey("voice_sample")
     }
 }
