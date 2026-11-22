@@ -138,7 +138,11 @@ private fun ModelSelector(models: List<String>, selected: String?, onSelect: (St
         }
         DropdownMenu(expanded = expanded, onDismissRequest = { expanded = false }) {
             if (models.isEmpty()) {
-                DropdownMenuItem(text = { Text("No installed models") }, onClick = { expanded = false }, enabled = false)
+                DropdownMenuItem(
+                    text = { Text("No installed models") },
+                    onClick = { expanded = false },
+                    enabled = false
+                )
             }
             models.forEach { name ->
                 DropdownMenuItem(
@@ -156,7 +160,10 @@ private fun ModelSelector(models: List<String>, selected: String?, onSelect: (St
 @Composable
 private fun Banner(message: String, onDismiss: (() -> Unit)?) {
     Surface(color = MaterialTheme.colorScheme.errorContainer, modifier = Modifier.fillMaxWidth()) {
-        Row(Modifier.padding(horizontal = 12.dp, vertical = 8.dp), verticalAlignment = Alignment.CenterVertically) {
+        Row(
+            Modifier.padding(horizontal = 12.dp, vertical = 8.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
             Text(
                 text = message,
                 color = MaterialTheme.colorScheme.onErrorContainer,
