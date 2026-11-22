@@ -56,19 +56,32 @@ jobs:
       - name: Compile Android APK
         run: gradle :app:assembleRelease --stacktrace
 
-      - name: Run zipalign on APK
+      - name: Locate compiled APK and run zipalign
         shell: bash
         run: |
           ZIPALIGN_BIN=$(which zipalign 2>/dev/null || find "${ANDROID_HOME:-/usr/local/lib/android/sdk}/build-tools" -name zipalign | head -n 1)
           echo "Using zipalign at: $ZIPALIGN_BIN"
 
-          APK_PATH=$(find app/build/outputs/apk -type f -name '*.apk' ! -name '*aligned*' ! -name '*signed*' | head -n 1)
+          echo "Listing all APKs produced by Gradle:"
+          find app/build -type f -name '*.apk' -print || true
+
+          # Target unsigned release APK first, fallback to any compiled APK
+          APK_PATH=$(find app/build/outputs/apk -type f -name '*unsigned*.apk' | head -n 1)
           if [[ -z "$APK_PATH" ]]; then
-            echo "No compiled APK found to align." >&2
+            APK_PATH=$(find app/build/outputs/apk -type f -name '*.apk' ! -name '*-aligned.apk' ! -name '*-signed.apk' | head -n 1)
+          fi
+          if [[ -z "$APK_PATH" ]]; then
+            APK_PATH=$(find app/build -type f -name '*.apk' ! -name '*-aligned.apk' ! -name '*-signed.apk' | head -n 1)
+          fi
+
+          if [[ -z "$APK_PATH" ]]; then
+            echo "Error: No compiled APK found in app/build." >&2
             exit 1
           fi
-          echo "Found APK to align: $APK_PATH"
+
+          echo "Found compiled APK to align: $APK_PATH"
           APK_DIR=$(dirname "$APK_PATH")
+          
           "$ZIPALIGN_BIN" -v -p 4 "$APK_PATH" "$APK_DIR/app-aligned.apk"
           "$ZIPALIGN_BIN" -c -v 4 "$APK_DIR/app-aligned.apk"
 
@@ -91,14 +104,14 @@ jobs:
           APKSIGNER_BIN=$(which apksigner 2>/dev/null || find "${ANDROID_HOME:-/usr/local/lib/android/sdk}/build-tools" -name apksigner | head -n 1)
           echo "Using apksigner at: $APKSIGNER_BIN"
 
-          ALIGNED_APK=$(find app/build/outputs/apk -type f -name '*aligned.apk' | head -n 1)
+          ALIGNED_APK=$(find app/build -type f -name 'app-aligned.apk' | head -n 1)
           if [[ -z "$ALIGNED_APK" ]]; then
-            echo "No aligned APK found to sign." >&2
+            echo "Error: No aligned APK found to sign." >&2
             exit 1
           fi
           APK_DIR=$(dirname "$ALIGNED_APK")
-          
-          # Signs the APK with V1, V2, V3, and V4 (which generates app-signed.apk and app-signed.apk.idsig)
+
+          # Signs with V1, V2, V3, and V4 (which generates app-signed.apk and app-signed.apk.idsig)
           "$APKSIGNER_BIN" sign \
             --ks test.keystore \
             --ks-pass pass:testpassword \
@@ -122,7 +135,7 @@ jobs:
         with:
           name: app-signed-apk
           path: |
-            app/build/outputs/apk/**/app-signed.apk
-            app/build/outputs/apk/**/app-signed.apk.idsig
+            **/app-signed.apk
+            **/app-signed.apk.idsig
           if-no-files-found: error
           compression-level: 0
