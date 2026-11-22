@@ -38,8 +38,9 @@ jobs:
       - name: Build debug APK
         run: gradle assembleDebug --stacktrace
 
-      - name: Verify and list built APK
-        run: ls -lh app/build/outputs/apk/debug/
+      - name: Verify built APK
+        run: |
+          find . -path "*/outputs/apk/*.apk" -ls
 
       - name: Upload signed debug APK
         uses: actions/upload-artifact@v4
