@@ -61,88 +61,63 @@ import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.example.ollamachat.data.ChatMessage
 
-private val ClaudeTerracotta = Color(0xFFD97757)
-private val ClaudeWarmAccent = Color(0xFFE08E6D)
-private val GeminiBlue = Color(0xFF8AB4F8)
+private val AccentCoral = Color(0xFFD97757)
+private val AccentApricot = Color(0xFFE08E6D)
+private val AccentSky = Color(0xFF8AB4F8)
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun ChatScreen(vm: ChatViewModel) {
     val state by vm.state.collectAsStateWithLifecycle()
-    var input by rememberSaveable { mutableStateOf("") }
+    var draft by rememberSaveable { mutableStateOf("") }
     val listState = rememberLazyListState()
-    val lastLength = state.messages.lastOrNull()?.content?.length
+    val tailLength = state.messages.lastOrNull()?.content?.length
 
-    LaunchedEffect(state.messages.size, lastLength) {
+    LaunchedEffect(state.messages.size, tailLength) {
         if (state.messages.isNotEmpty()) listState.scrollToItem(state.messages.lastIndex)
     }
 
     Scaffold(
-        containerColor = Color(0xFF0C0D10),
+        containerColor = MaterialTheme.colorScheme.background,
         topBar = {
-            TopAppBar(
-                colors = TopAppBarDefaults.topAppBarColors(
-                    containerColor = Color(0xFF12141B),
-                    titleContentColor = MaterialTheme.colorScheme.onBackground,
-                    actionIconContentColor = MaterialTheme.colorScheme.onSurfaceVariant
-                ),
-                title = {
-                    Row(verticalAlignment = Alignment.CenterVertically) {
-                        Box(
-                            modifier = Modifier
-                                .size(9.dp)
-                                .clip(CircleShape)
-                                .background(ClaudeWarmAccent)
-                        )
-                        Spacer(modifier = Modifier.width(8.dp))
-                        Text(
-                            text = "Studio",
-                            fontFamily = FontFamily.Serif,
-                            fontWeight = FontWeight.SemiBold,
-                            maxLines = 1,
-                            overflow = TextOverflow.Ellipsis
-                        )
-                    }
-                },
-                actions = {
-                    IconButton(onClick = { vm.refreshModels() }) {
-                        Icon(Icons.Default.Refresh, contentDescription = "Refresh models")
-                    }
-                    IconButton(onClick = vm::clearChat) {
-                        Icon(Icons.Default.Delete, contentDescription = "Clear chat")
-                    }
-                    IconButton(onClick = vm::openSettings) {
-                        Icon(Icons.Default.Settings, contentDescription = "Settings")
-                    }
-                }
+            StudioHeader(
+                onRefresh = { vm.refreshModels() },
+                onClear = vm::clearChat,
+                onSettings = vm::openSettings
             )
         }
-    ) { padding ->
+    ) { innerPadding ->
         Column(
             modifier = Modifier
-                .background(Color(0xFF0C0D10))
-                .padding(padding)
+                .fillMaxSize()
+                .background(MaterialTheme.colorScheme.background)
+                .padding(innerPadding)
                 .navigationBarsPadding()
                 .imePadding()
-                .fillMaxSize()
         ) {
-            ModelSelector(
+            ModelPickerPill(
                 models = state.models,
                 selected = state.selectedModel,
                 onSelect = vm::selectModel
             )
+
             Box(
                 modifier = Modifier
                     .fillMaxWidth()
                     .height(1.dp)
                     .background(Color(0xFF232734))
             )
-            state.connectionError?.let { Banner(it, onDismiss = null) }
-            state.chatError?.let { Banner(it, onDismiss = vm::dismissChatError) }
+
+            state.connectionError?.let { err ->
+                ErrorAlertBanner(message = err, onDismiss = null)
+            }
+            state.chatError?.let { err ->
+                ErrorAlertBanner(message = err, onDismiss = vm::dismissChatError)
+            }
 
             if (state.messages.isEmpty()) {
-                HybridEmptyState(
-                    onPickStarter = { starter -> input = starter },
+                EmptyPromptDeck(
+                    onChooseStarter = { picked -> draft = picked },
                     modifier = Modifier.weight(1f)
                 )
             } else {
@@ -154,95 +129,159 @@ fun ChatScreen(vm: ChatViewModel) {
                     contentPadding = PaddingValues(horizontal = 14.dp, vertical = 12.dp),
                     verticalArrangement = Arrangement.spacedBy(12.dp)
                 ) {
-                    items(state.messages, key = { it.id }) { MessageBubble(it) }
-                }
-            }
-
-            Surface(
-                color = Color(0xFF161922),
-                contentColor = MaterialTheme.colorScheme.onSurface,
-                shape = RoundedCornerShape(28.dp),
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(horizontal = 10.dp, vertical = 8.dp)
-                    .border(1.dp, Color(0xFF3A3544), RoundedCornerShape(28.dp))
-            ) {
-                Row(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(start = 14.dp, end = 6.dp, top = 4.dp, bottom = 4.dp),
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    OutlinedTextField(
-                        value = input,
-                        onValueChange = { input = it },
-                        modifier = Modifier.weight(1f),
-                        placeholder = {
-                            Text(
-                                text = "Ask anything...",
-                                color = MaterialTheme.colorScheme.onSurfaceVariant
-                            )
-                        },
-                        maxLines = 5,
-                        colors = OutlinedTextFieldDefaults.colors(
-                            focusedBorderColor = Color.Transparent,
-                            unfocusedBorderColor = Color.Transparent,
-                            cursorColor = ClaudeWarmAccent,
-                            focusedTextColor = MaterialTheme.colorScheme.onSurface,
-                            unfocusedTextColor = MaterialTheme.colorScheme.onSurface
-                        )
-                    )
-
-                    Spacer(modifier = Modifier.width(6.dp))
-
-                    if (state.streaming) {
-                        IconButton(
-                            onClick = vm::stopStreaming,
-                            modifier = Modifier
-                                .size(42.dp)
-                                .clip(CircleShape)
-                                .background(Color(0xFF3E241C))
-                        ) {
-                            Icon(
-                                Icons.Default.Close,
-                                contentDescription = "Stop",
-                                tint = ClaudeWarmAccent
-                            )
-                        }
-                    } else {
-                        val canSend = input.isNotBlank()
-                        IconButton(
-                            onClick = { if (vm.sendMessage(input)) input = "" },
-                            enabled = canSend,
-                            modifier = Modifier
-                                .size(42.dp)
-                                .clip(CircleShape)
-                                .background(
-                                    if (canSend) ClaudeTerracotta else Color(0xFF1F2330)
-                                )
-                        ) {
-                            Icon(
-                                Icons.AutoMirrored.Filled.Send,
-                                contentDescription = "Send",
-                                tint = if (canSend) Color(0xFF140B07)
-                                else MaterialTheme.colorScheme.onSurfaceVariant
-                            )
-                        }
+                    items(state.messages, key = { it.id }) { item ->
+                        ChatMessageItem(message = item)
                     }
                 }
             }
+
+            MessageComposerBar(
+                value = draft,
+                streaming = state.streaming,
+                onValueChange = { draft = it },
+                onSend = { if (vm.sendMessage(draft)) draft = "" },
+                onStop = vm::stopStreaming
+            )
         }
     }
 
     if (state.settingsOpen) SettingsDialog(state, vm)
 }
 
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
-private fun HybridEmptyState(
-    onPickStarter: (String) -> Unit,
+private fun StudioHeader(
+    onRefresh: () -> Unit,
+    onClear: () -> Unit,
+    onSettings: () -> Unit
+) {
+    TopAppBar(
+        colors = TopAppBarDefaults.topAppBarColors(
+            containerColor = MaterialTheme.colorScheme.surface,
+            titleContentColor = MaterialTheme.colorScheme.onBackground,
+            actionIconContentColor = MaterialTheme.colorScheme.onSurfaceVariant
+        ),
+        title = {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Box(
+                    modifier = Modifier
+                        .size(9.dp)
+                        .clip(CircleShape)
+                        .background(AccentApricot)
+                )
+                Spacer(modifier = Modifier.width(8.dp))
+                Text(
+                    text = "Studio",
+                    fontFamily = FontFamily.Serif,
+                    fontWeight = FontWeight.SemiBold,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis
+                )
+            }
+        },
+        actions = {
+            IconButton(onClick = onRefresh) {
+                Icon(Icons.Default.Refresh, contentDescription = "Refresh models")
+            }
+            IconButton(onClick = onClear) {
+                Icon(Icons.Default.Delete, contentDescription = "Clear chat")
+            }
+            IconButton(onClick = onSettings) {
+                Icon(Icons.Default.Settings, contentDescription = "Settings")
+            }
+        }
+    )
+}
+
+@Composable
+private fun ModelPickerPill(
+    models: List<String>,
+    selected: String?,
+    onSelect: (String) -> Unit
+) {
+    var menuOpen by rememberSaveable { mutableStateOf(false) }
+    Box(modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp)) {
+        Surface(
+            color = Color(0xFF191D29),
+            contentColor = MaterialTheme.colorScheme.onSurface,
+            shape = RoundedCornerShape(999.dp),
+            modifier = Modifier.border(1.dp, Color(0xFF31394D), RoundedCornerShape(999.dp))
+        ) {
+            TextButton(
+                onClick = { menuOpen = true },
+                contentPadding = PaddingValues(horizontal = 14.dp, vertical = 6.dp)
+            ) {
+                Box(
+                    modifier = Modifier
+                        .size(7.dp)
+                        .clip(CircleShape)
+                        .background(if (selected != null) AccentApricot else AccentSky)
+                )
+                Spacer(modifier = Modifier.width(8.dp))
+                Text(
+                    text = selected ?: "No model selected",
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                    fontWeight = FontWeight.Medium,
+                    modifier = Modifier.widthIn(max = 250.dp)
+                )
+                Spacer(modifier = Modifier.width(4.dp))
+                Icon(Icons.Default.ArrowDropDown, contentDescription = null)
+            }
+        }
+        DropdownMenu(expanded = menuOpen, onDismissRequest = { menuOpen = false }) {
+            if (models.isEmpty()) {
+                DropdownMenuItem(
+                    text = { Text("No installed models") },
+                    onClick = { menuOpen = false },
+                    enabled = false
+                )
+            }
+            models.forEach { entry ->
+                DropdownMenuItem(
+                    text = { Text(entry) },
+                    onClick = {
+                        onSelect(entry)
+                        menuOpen = false
+                    }
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun ErrorAlertBanner(message: String, onDismiss: (() -> Unit)?) {
+    Surface(
+        color = MaterialTheme.colorScheme.errorContainer,
+        shape = RoundedCornerShape(14.dp),
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(horizontal = 12.dp, vertical = 6.dp)
+    ) {
+        Row(
+            modifier = Modifier.padding(horizontal = 12.dp, vertical = 9.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Text(
+                text = message,
+                color = MaterialTheme.colorScheme.onErrorContainer,
+                style = MaterialTheme.typography.bodySmall,
+                modifier = Modifier.weight(1f)
+            )
+            if (onDismiss != null) {
+                TextButton(onClick = onDismiss) { Text("Dismiss") }
+            }
+        }
+    }
+}
+
+@Composable
+private fun EmptyPromptDeck(
+    onChooseStarter: (String) -> Unit,
     modifier: Modifier = Modifier
 ) {
-    val starters = listOf(
+    val prompts = listOf(
         "Break down a tricky problem step by step",
         "Draft clean code and explain why it works",
         "Organize rough notes into a clear plan"
@@ -269,18 +308,18 @@ private fun HybridEmptyState(
         )
         Spacer(modifier = Modifier.height(18.dp))
 
-        starters.forEachIndexed { index, prompt ->
-            val accentBorder = if (index % 2 == 0) Color(0xFF2D4366) else Color(0xFF55352A)
-            val accentBg = if (index % 2 == 0) Color(0xFF141C2B) else Color(0xFF1D1514)
+        prompts.forEachIndexed { idx, prompt ->
+            val cardBorder = if (idx % 2 == 0) Color(0xFF2D4366) else Color(0xFF55352A)
+            val cardFill = if (idx % 2 == 0) Color(0xFF141C2B) else Color(0xFF1D1514)
             Surface(
-                color = accentBg,
+                color = cardFill,
                 contentColor = MaterialTheme.colorScheme.onSurface,
                 shape = RoundedCornerShape(18.dp),
                 modifier = Modifier
                     .fillMaxWidth()
                     .padding(bottom = 8.dp)
-                    .border(1.dp, accentBorder, RoundedCornerShape(18.dp))
-                    .clickable { onPickStarter(prompt) }
+                    .border(1.dp, cardBorder, RoundedCornerShape(18.dp))
+                    .clickable { onChooseStarter(prompt) }
             ) {
                 Text(
                     text = prompt,
@@ -293,95 +332,18 @@ private fun HybridEmptyState(
 }
 
 @Composable
-private fun ModelSelector(models: List<String>, selected: String?, onSelect: (String) -> Unit) {
-    var expanded by rememberSaveable { mutableStateOf(false) }
-    Box(Modifier.padding(horizontal = 12.dp, vertical = 6.dp)) {
-        Surface(
-            color = Color(0xFF191D29),
-            contentColor = MaterialTheme.colorScheme.onSurface,
-            shape = RoundedCornerShape(999.dp),
-            modifier = Modifier.border(1.dp, Color(0xFF31394D), RoundedCornerShape(999.dp))
-        ) {
-            TextButton(
-                onClick = { expanded = true },
-                contentPadding = PaddingValues(horizontal = 14.dp, vertical = 6.dp)
-            ) {
-                Box(
-                    modifier = Modifier
-                        .size(7.dp)
-                        .clip(CircleShape)
-                        .background(if (selected != null) ClaudeWarmAccent else GeminiBlue)
-                )
-                Spacer(modifier = Modifier.width(8.dp))
-                Text(
-                    text = selected ?: "No model selected",
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis,
-                    fontWeight = FontWeight.Medium,
-                    modifier = Modifier.widthIn(max = 250.dp)
-                )
-                Spacer(modifier = Modifier.width(4.dp))
-                Icon(Icons.Default.ArrowDropDown, contentDescription = null)
-            }
-        }
-        DropdownMenu(expanded = expanded, onDismissRequest = { expanded = false }) {
-            if (models.isEmpty()) {
-                DropdownMenuItem(
-                    text = { Text("No installed models") },
-                    onClick = { expanded = false },
-                    enabled = false
-                )
-            }
-            models.forEach { name ->
-                DropdownMenuItem(
-                    text = { Text(name) },
-                    onClick = {
-                        onSelect(name)
-                        expanded = false
-                    }
-                )
-            }
-        }
-    }
-}
-
-@Composable
-private fun Banner(message: String, onDismiss: (() -> Unit)?) {
-    Surface(
-        color = MaterialTheme.colorScheme.errorContainer,
-        shape = RoundedCornerShape(14.dp),
-        modifier = Modifier
-            .fillMaxWidth()
-            .padding(horizontal = 12.dp, vertical = 6.dp)
-    ) {
-        Row(
-            Modifier.padding(horizontal = 12.dp, vertical = 9.dp),
-            verticalAlignment = Alignment.CenterVertically
-        ) {
-            Text(
-                text = message,
-                color = MaterialTheme.colorScheme.onErrorContainer,
-                style = MaterialTheme.typography.bodySmall,
-                modifier = Modifier.weight(1f)
-            )
-            if (onDismiss != null) {
-                TextButton(onClick = onDismiss) { Text("Dismiss") }
-            }
-        }
-    }
-}
-
-@Composable
-private fun MessageBubble(message: ChatMessage) {
-    val isUser = message.role == "user"
+private fun ChatMessageItem(message: ChatMessage) {
+    val fromUser = message.role == "user"
     Row(
-        Modifier.fillMaxWidth(),
-        horizontalArrangement = if (isUser) Arrangement.End else Arrangement.Start
+        modifier = Modifier.fillMaxWidth(),
+        horizontalArrangement = if (fromUser) Arrangement.End else Arrangement.Start
     ) {
         Surface(
-            color = if (isUser) Color(0xFF1B2E4B) else Color(0xFF17161B),
-            contentColor = if (isUser) Color(0xFFEAF2FF) else Color(0xFFF3EFEA),
-            shape = if (isUser) {
+            color = if (fromUser) MaterialTheme.colorScheme.primaryContainer
+            else MaterialTheme.colorScheme.surfaceVariant,
+            contentColor = if (fromUser) MaterialTheme.colorScheme.onPrimaryContainer
+            else MaterialTheme.colorScheme.onSurface,
+            shape = if (fromUser) {
                 RoundedCornerShape(topStart = 20.dp, topEnd = 20.dp, bottomStart = 20.dp, bottomEnd = 6.dp)
             } else {
                 RoundedCornerShape(16.dp)
@@ -390,8 +352,8 @@ private fun MessageBubble(message: ChatMessage) {
                 .widthIn(max = 325.dp)
                 .border(
                     width = 1.dp,
-                    color = if (isUser) Color(0xFF33578A) else Color(0xFF3E2B25),
-                    shape = if (isUser) {
+                    color = if (fromUser) Color(0xFF33578A) else Color(0xFF3E2B25),
+                    shape = if (fromUser) {
                         RoundedCornerShape(topStart = 20.dp, topEnd = 20.dp, bottomStart = 20.dp, bottomEnd = 6.dp)
                     } else {
                         RoundedCornerShape(16.dp)
@@ -403,6 +365,89 @@ private fun MessageBubble(message: ChatMessage) {
                 modifier = Modifier.padding(horizontal = 15.dp, vertical = 11.dp),
                 style = MaterialTheme.typography.bodyMedium
             )
+        }
+    }
+}
+
+@Composable
+private fun MessageComposerBar(
+    value: String,
+    streaming: Boolean,
+    onValueChange: (String) -> Unit,
+    onSend: () -> Unit,
+    onStop: () -> Unit
+) {
+    Surface(
+        color = Color(0xFF161922),
+        contentColor = MaterialTheme.colorScheme.onSurface,
+        shape = RoundedCornerShape(28.dp),
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(horizontal = 10.dp, vertical = 8.dp)
+            .border(1.dp, Color(0xFF3A3544), RoundedCornerShape(28.dp))
+    ) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(start = 14.dp, end = 6.dp, top = 4.dp, bottom = 4.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            OutlinedTextField(
+                value = value,
+                onValueChange = onValueChange,
+                modifier = Modifier.weight(1f),
+                placeholder = {
+                    Text(
+                        text = "Ask anything...",
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                },
+                maxLines = 5,
+                colors = OutlinedTextFieldDefaults.colors(
+                    focusedBorderColor = Color.Transparent,
+                    unfocusedBorderColor = Color.Transparent,
+                    cursorColor = AccentApricot,
+                    focusedTextColor = MaterialTheme.colorScheme.onSurface,
+                    unfocusedTextColor = MaterialTheme.colorScheme.onSurface
+                )
+            )
+
+            Spacer(modifier = Modifier.width(6.dp))
+
+            if (streaming) {
+                IconButton(
+                    onClick = onStop,
+                    modifier = Modifier
+                        .size(42.dp)
+                        .clip(CircleShape)
+                        .background(Color(0xFF3E241C))
+                ) {
+                    Icon(
+                        Icons.Default.Close,
+                        contentDescription = "Stop",
+                        tint = AccentApricot
+                    )
+                }
+            } else {
+                val readyToSend = value.isNotBlank()
+                IconButton(
+                    onClick = onSend,
+                    enabled = readyToSend,
+                    modifier = Modifier
+                        .size(42.dp)
+                        .clip(CircleShape)
+                        .background(
+                            if (readyToSend) AccentCoral else Color(0xFF1F2330)
+                        )
+                ) {
+                    Icon(
+                        Icons.AutoMirrored.Filled.Send,
+                        contentDescription = "Send",
+                        tint = if (readyToSend) Color(0xFF140B07)
+                        else MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+            }
         }
     }
 }
