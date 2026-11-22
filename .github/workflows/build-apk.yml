@@ -6,7 +6,7 @@ on:
   workflow_dispatch:
 
 permissions:
-  contents: read
+  contents: write
 
 jobs:
   build:
@@ -111,7 +111,7 @@ jobs:
           fi
           APK_DIR=$(dirname "$ALIGNED_APK")
 
-          # Signs with V1, V2, V3, and V4 (which generates app-signed.apk and app-signed.apk.idsig)
+          # Signs with V1, V2, V3, and V4 (producing app-signed.apk and app-signed.apk.idsig)
           "$APKSIGNER_BIN" sign \
             --ks test.keystore \
             --ks-pass pass:testpassword \
@@ -139,3 +139,18 @@ jobs:
             **/app-signed.apk.idsig
           if-no-files-found: error
           compression-level: 0
+
+      - name: Publish to GitHub Releases
+        uses: softprops/action-gh-release@v2
+        if: github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/')
+        with:
+          tag_name: ${{ startsWith(github.ref, 'refs/tags/') && github.ref_name || format('v1.0.{0}', github.run_number) }}
+          name: ${{ startsWith(github.ref, 'refs/tags/') && github.ref_name || format('OllamaChat v1.0.{0}', github.run_number) }}
+          draft: false
+          prerelease: false
+          generate_release_notes: true
+          files: |
+            **/app-signed.apk
+            **/app-signed.apk.idsig
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
