@@ -22,7 +22,6 @@ import java.net.SocketTimeoutException
 import java.net.UnknownHostException
 import java.util.concurrent.TimeUnit
 
-/** Plain HTTP client for the Ollama REST API. No authentication headers are ever sent. */
 class OllamaApi {
 
     private val quickClient = OkHttpClient.Builder()
@@ -31,13 +30,11 @@ class OllamaApi {
         .writeTimeout(15, TimeUnit.SECONDS)
         .build()
 
-    // Streaming responses can pause for a long time (model loading), so no read timeout.
     private val streamClient = quickClient.newBuilder()
         .readTimeout(0, TimeUnit.SECONDS)
         .callTimeout(0, TimeUnit.SECONDS)
         .build()
 
-    /** GET /api/tags -> installed model identifiers. */
     suspend fun listModels(baseUrl: String): List<String> = withContext(Dispatchers.IO) {
         try {
             val request = Request.Builder()
@@ -65,7 +62,6 @@ class OllamaApi {
         }
     }
 
-    /** POST /api/pull (NDJSON stream) -> progress updates. Throws OllamaException on failure. */
     fun pull(baseUrl: String, model: String): Flow<PullProgress> {
         val body = JSONObject().put("model", model).put("stream", true)
         return streamLines(post(baseUrl, "api/pull", body)).mapNotNull { line ->
@@ -79,11 +75,15 @@ class OllamaApi {
         }
     }
 
-    /** POST /api/chat (NDJSON stream) -> content chunks. Throws OllamaException on failure. */
-    fun chat(baseUrl: String, model: String, messages: List<ChatMessage>): Flow<ChatChunk> {
+    fun chat(baseUrl: String, model: String, messages: List<ChatMessage>, temperature: Float = 0.7f): Flow<ChatChunk> {
         val arr = JSONArray()
         messages.forEach { arr.put(JSONObject().put("role", it.role).put("content", it.content)) }
-        val body = JSONObject().put("model", model).put("messages", arr).put("stream", true)
+        val options = JSONObject().put("temperature", temperature.toDouble())
+        val body = JSONObject()
+            .put("model", model)
+            .put("messages", arr)
+            .put("options", options)
+            .put("stream", true)
         return streamLines(post(baseUrl, "api/chat", body)).mapNotNull { line ->
             val o = parseObject(line) ?: return@mapNotNull null
             if (o.has("error")) throw OllamaException(o.optString("error"))
@@ -109,7 +109,6 @@ class OllamaApi {
             null
         }
 
-    /** Emits each non-blank line of the response body as it arrives; cancels the call if collection is cancelled. */
     private fun streamLines(request: Request): Flow<String> = flow {
         val call = streamClient.newCall(request)
         val handle = currentCoroutineContext()[Job]?.invokeOnCompletion { cause ->
@@ -159,12 +158,11 @@ class OllamaApi {
 
     private fun describe(e: IOException): String = when (e) {
         is SocketTimeoutException ->
-            "Connection timed out. Check the address and that Ollama is running."
+            "Connection timed out. Check that your laptop and phone are on the same Wi-Fi and Ollama is running."
         is UnknownHostException ->
             "Unknown host. Check the server address."
         is ConnectException ->
-            "Could not connect. Is Ollama running at this address? For a PC on your network, " +
-                "use its LAN IP and start Ollama with OLLAMA_HOST=0.0.0.0."
+            "Could not connect to Ollama. Ensure Ollama is started with OLLAMA_HOST=0.0.0.0 on your laptop."
         else -> "Network error: ${e.message ?: e.javaClass.simpleName}"
     }
 }
