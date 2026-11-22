@@ -136,6 +136,7 @@ import java.util.UUID
 import java.util.concurrent.Executors
 import java.util.zip.ZipEntry
 import java.util.zip.ZipOutputStream
+import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
@@ -362,6 +363,119 @@ private suspend fun fetchClonedAudioFile(
         outFile
     } finally {
         conn.disconnect()
+    }
+}
+
+private fun syncLockedProfileFromConfig(
+    lockedVoiceManager: LockedVoiceManager,
+    config: StudioConfig
+): LockedVoiceProfile {
+    val existing = lockedVoiceManager.getLockedProfile()
+    val clipKey = config.voiceClipName.trim().ifBlank { existing?.refAudioName ?: "default_voice" }
+    val profileId = existing?.id ?: "profile_${clipKey.hashCode()}"
+    val profileName = existing?.name ?: clipKey.substringBeforeLast('.').ifBlank { "Locked Voice" }
+
+    val updated = LockedVoiceProfile(
+        id = profileId,
+        name = profileName,
+        refAudioName = clipKey,
+        speechRate = config.speechRate,
+        speechPitch = config.speechPitch,
+        locked = true
+    )
+    lockedVoiceManager.saveAndLockProfile(updated)
+    return updated
+}
+
+private fun handleSpeakToggleWithLockedCache(
+    context: Context,
+    scope: CoroutineScope,
+    msgId: String,
+    msgContent: String,
+    isSpeakingThis: Boolean,
+    config: StudioConfig,
+    lockedVoiceManager: LockedVoiceManager,
+    mediaPlayer: MediaPlayer,
+    tts: TextToSpeech,
+    ttsReady: Boolean,
+    stopAllAudio: () -> Unit,
+    onSpeakingStateChange: (String?) -> Unit,
+    onBannerError: (String?) -> Unit
+) {
+    if (isSpeakingThis) {
+        stopAllAudio()
+        return
+    }
+    if (msgContent.isBlank()) return
+
+    stopAllAudio()
+
+    if (config.voiceServerUrl.isNotBlank()) {
+        val activeProfile = syncLockedProfileFromConfig(lockedVoiceManager, config)
+        val cachedFile = lockedVoiceManager.cachedAudioFile(activeProfile.id, msgContent)
+        onSpeakingStateChange(msgId)
+
+        if (cachedFile.exists() && cachedFile.length() > 0L) {
+            lockedVoiceManager.playWavFile(
+                player = mediaPlayer,
+                wavFile = cachedFile,
+                onComplete = { onSpeakingStateChange(null) },
+                onError = { errMsg ->
+                    onSpeakingStateChange(null)
+                    onBannerError(errMsg)
+                }
+            )
+            return
+        }
+
+        scope.launch {
+            runCatching {
+                val downloadedFile = fetchClonedAudioFile(
+                    context = context,
+                    serverUrl = config.voiceServerUrl,
+                    text = msgContent,
+                    voiceClipName = activeProfile.refAudioName
+                )
+                withContext(Dispatchers.IO) {
+                    cachedFile.parentFile?.mkdirs()
+                    downloadedFile.inputStream().use { input ->
+                        cachedFile.outputStream().use { output ->
+                            input.copyTo(output)
+                        }
+                    }
+                    if (downloadedFile.exists() && downloadedFile.absolutePath != cachedFile.absolutePath) {
+                        downloadedFile.delete()
+                    }
+                }
+                cachedFile
+            }.onSuccess { wavFile ->
+                if (wavFile.exists() && wavFile.length() > 0L) {
+                    lockedVoiceManager.playWavFile(
+                        player = mediaPlayer,
+                        wavFile = wavFile,
+                        onComplete = { onSpeakingStateChange(null) },
+                        onError = { errMsg ->
+                            onSpeakingStateChange(null)
+                            onBannerError(errMsg)
+                        }
+                    )
+                } else {
+                    onSpeakingStateChange(null)
+                    onBannerError("Synthesized WAV file was empty.")
+                }
+            }.onFailure { err ->
+                onSpeakingStateChange(null)
+                onBannerError("Voice server error: ${err.message}")
+            }
+        }
+    } else if (ttsReady) {
+        resolveVoice(tts, config.preferredVoiceName)?.let { tts.voice = it }
+        tts.setSpeechRate(config.speechRate)
+        tts.setPitch(config.speechPitch)
+        tts.speak(msgContent, TextToSpeech.QUEUE_FLUSH, null, msgId)
+        onSpeakingStateChange(msgId)
+    } else {
+        Toast.makeText(context, "TTS engine not ready yet", Toast.LENGTH_SHORT).show()
     }
 }
 
@@ -795,6 +909,7 @@ fun ChatScreen() {
     var historyOpen by remember { mutableStateOf(false) }
     var speakingMessageId by remember { mutableStateOf<String?>(null) }
 
+    val lockedVoiceManager = remember(context) { LockedVoiceManager(context) }
     val mediaPlayer = remember { MediaPlayer() }
     var ttsReady by remember { mutableStateOf(false) }
     val tts = remember {
@@ -896,6 +1011,7 @@ fun ChatScreen() {
             lineCheckpointTracker = true
         )
         saveConfig(context, config)
+        syncLockedProfileFromConfig(lockedVoiceManager, config)
         refreshModels(preferFastModel = true)
         statusNote = "Max Speed tuned safely (CPU 5, GPU 99, ctx 1536, max 512)"
     }
@@ -978,6 +1094,7 @@ fun ChatScreen() {
     }
 
     LaunchedEffect(Unit) {
+        syncLockedProfileFromConfig(lockedVoiceManager, config)
         val auto = discoverOllamaOnLan(context, config.hostUrl)
         if (auto != null && auto != config.hostUrl) {
             config = config.copy(hostUrl = auto)
@@ -1321,48 +1438,21 @@ fun ChatScreen() {
                                 Toast.makeText(context, "Copied to clipboard", Toast.LENGTH_SHORT).show()
                             },
                             onToggleSpeak = {
-                                if (isSpeakingThis) {
-                                    stopAllAudio()
-                                } else if (msg.content.isNotBlank()) {
-                                    stopAllAudio()
-                                    if (config.voiceServerUrl.isNotBlank()) {
-                                        speakingMessageId = msg.id
-                                        scope.launch {
-                                            runCatching {
-                                                fetchClonedAudioFile(
-                                                    context = context,
-                                                    serverUrl = config.voiceServerUrl,
-                                                    text = msg.content,
-                                                    voiceClipName = config.voiceClipName
-                                                )
-                                            }.onSuccess { wavFile ->
-                                                if (speakingMessageId == msg.id) {
-                                                    runCatching {
-                                                        mediaPlayer.reset()
-                                                        mediaPlayer.setDataSource(wavFile.absolutePath)
-                                                        mediaPlayer.setOnCompletionListener {
-                                                            speakingMessageId = null
-                                                        }
-                                                        mediaPlayer.prepare()
-                                                        mediaPlayer.start()
-                                                    }.onFailure {
-                                                        speakingMessageId = null
-                                                        bannerError = "Audio playback error: ${it.message}"
-                                                    }
-                                                }
-                                            }.onFailure { err ->
-                                                speakingMessageId = null
-                                                bannerError = "Voice server error: ${err.message}"
-                                            }
-                                        }
-                                    } else if (ttsReady) {
-                                        resolveVoice(tts, config.preferredVoiceName)?.let { tts.voice = it }
-                                        tts.setSpeechRate(config.speechRate)
-                                        tts.setPitch(config.speechPitch)
-                                        tts.speak(msg.content, TextToSpeech.QUEUE_FLUSH, null, msg.id)
-                                        speakingMessageId = msg.id
-                                    }
-                                }
+                                handleSpeakToggleWithLockedCache(
+                                    context = context,
+                                    scope = scope,
+                                    msgId = msg.id,
+                                    msgContent = msg.content,
+                                    isSpeakingThis = isSpeakingThis,
+                                    config = config,
+                                    lockedVoiceManager = lockedVoiceManager,
+                                    mediaPlayer = mediaPlayer,
+                                    tts = tts,
+                                    ttsReady = ttsReady,
+                                    stopAllAudio = { stopAllAudio() },
+                                    onSpeakingStateChange = { speakingMessageId = it },
+                                    onBannerError = { bannerError = it }
+                                )
                             },
                             onDownloadZipToDownloads = { zipPath ->
                                 val savedLabel = saveZipDirectToDownloads(context, zipPath)
@@ -1945,6 +2035,7 @@ fun ChatScreen() {
                             voiceClipName = voiceClipDraft.trim()
                         )
                         saveConfig(context, config)
+                        syncLockedProfileFromConfig(lockedVoiceManager, config)
                         if (ttsReady) {
                             resolveVoice(tts, config.preferredVoiceName)?.let { tts.voice = it }
                             tts.setSpeechRate(config.speechRate)
