@@ -54,7 +54,6 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
@@ -79,20 +78,12 @@ fun ChatScreen(vm: ChatViewModel) {
         if (state.messages.isNotEmpty()) listState.scrollToItem(state.messages.lastIndex)
     }
 
-    val hybridBackdrop = Brush.verticalGradient(
-        colors = listOf(
-            Color(0xFF161316),
-            Color(0xFF0E1016),
-            Color(0xFF0A0B0F)
-        )
-    )
-
     Scaffold(
-        containerColor = Color.Transparent,
+        containerColor = Color(0xFF0C0D10),
         topBar = {
             TopAppBar(
                 colors = TopAppBarDefaults.topAppBarColors(
-                    containerColor = Color(0xFF12131A),
+                    containerColor = Color(0xFF12141B),
                     titleContentColor = MaterialTheme.colorScheme.onBackground,
                     actionIconContentColor = MaterialTheme.colorScheme.onSurfaceVariant
                 ),
@@ -100,13 +91,11 @@ fun ChatScreen(vm: ChatViewModel) {
                     Row(verticalAlignment = Alignment.CenterVertically) {
                         Box(
                             modifier = Modifier
-                                .size(10.dp)
+                                .size(9.dp)
                                 .clip(CircleShape)
-                                .background(
-                                    Brush.linearGradient(listOf(GeminiBlue, ClaudeTerracotta))
-                                )
+                                .background(ClaudeWarmAccent)
                         )
-                        Spacer(modifier = Modifier.width(10.dp))
+                        Spacer(modifier = Modifier.width(8.dp))
                         Text(
                             text = "Studio",
                             fontFamily = FontFamily.Serif,
@@ -132,7 +121,7 @@ fun ChatScreen(vm: ChatViewModel) {
     ) { padding ->
         Column(
             modifier = Modifier
-                .background(hybridBackdrop)
+                .background(Color(0xFF0C0D10))
                 .padding(padding)
                 .navigationBarsPadding()
                 .imePadding()
@@ -182,13 +171,7 @@ fun ChatScreen(vm: ChatViewModel) {
                 modifier = Modifier
                     .fillMaxWidth()
                     .padding(horizontal = 10.dp, vertical = 8.dp)
-                    .border(
-                        width = 1.dp,
-                        brush = Brush.horizontalGradient(
-                            colors = listOf(Color(0xFF33486B), Color(0xFF5A372B))
-                        ),
-                        shape = RoundedCornerShape(28.dp)
-                    )
+                    .border(1.dp, Color(0xFF3A3544), RoundedCornerShape(28.dp))
             ) {
                 Row(
                     modifier = Modifier
@@ -241,17 +224,13 @@ fun ChatScreen(vm: ChatViewModel) {
                                 .size(42.dp)
                                 .clip(CircleShape)
                                 .background(
-                                    if (canSend) {
-                                        Brush.linearGradient(listOf(GeminiBlue, ClaudeTerracotta))
-                                    } else {
-                                        Brush.linearGradient(listOf(Color(0xFF1F2330), Color(0xFF1F2330)))
-                                    }
+                                    if (canSend) ClaudeTerracotta else Color(0xFF1F2330)
                                 )
                         ) {
                             Icon(
                                 Icons.AutoMirrored.Filled.Send,
                                 contentDescription = "Send",
-                                tint = if (canSend) Color(0xFF0C0D10)
+                                tint = if (canSend) Color(0xFF140B07)
                                 else MaterialTheme.colorScheme.onSurfaceVariant
                             )
                         }
@@ -306,8 +285,8 @@ private fun HybridEmptyState(
                 modifier = Modifier
                     .fillMaxWidth()
                     .padding(bottom = 8.dp)
-                    .border(1.dp, accentBorder, RoundedCornerShape(18.dp))
                     .clip(RoundedCornerShape(18.dp))
+                    .border(1.dp, accentBorder, RoundedCornerShape(18.dp))
                     .clickable { onPickStarter(prompt) }
             ) {
                 Text(
@@ -328,7 +307,9 @@ private fun ModelSelector(models: List<String>, selected: String?, onSelect: (St
             color = Color(0xFF191D29),
             contentColor = MaterialTheme.colorScheme.onSurface,
             shape = RoundedCornerShape(999.dp),
-            modifier = Modifier.border(1.dp, Color(0xFF31394D), RoundedCornerShape(999.dp))
+            modifier = Modifier
+                .clip(RoundedCornerShape(999.dp))
+                .border(1.dp, Color(0xFF31394D), RoundedCornerShape(999.dp))
         ) {
             TextButton(
                 onClick = { expanded = true },
