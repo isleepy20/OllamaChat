@@ -7,16 +7,11 @@ import android.content.Context
 import android.content.Intent
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
-import android.media.MediaMetadataRetriever
-import android.media.MediaPlayer
 import android.net.Uri
-import android.net.wifi.WifiManager
 import android.os.Build
 import android.os.Environment
 import android.provider.MediaStore
 import android.provider.OpenableColumns
-import android.speech.tts.TextToSpeech
-import android.speech.tts.Voice
 import android.widget.Toast
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
@@ -54,7 +49,6 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.Send
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.ArrowDropDown
-import androidx.compose.material.icons.filled.AudioFile
 import androidx.compose.material.icons.filled.Bolt
 import androidx.compose.material.icons.filled.CameraAlt
 import androidx.compose.material.icons.filled.Check
@@ -71,8 +65,6 @@ import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material.icons.filled.Share
-import androidx.compose.material.icons.filled.VolumeOff
-import androidx.compose.material.icons.filled.VolumeUp
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
@@ -84,7 +76,6 @@ import androidx.compose.material3.FilterChip
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
-import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
@@ -98,7 +89,6 @@ import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
 import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateListOf
@@ -119,8 +109,6 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
-import androidx.compose.ui.window.Dialog
-import androidx.compose.ui.window.DialogProperties
 import androidx.core.content.FileProvider
 import java.io.BufferedInputStream
 import java.io.BufferedOutputStream
@@ -132,15 +120,11 @@ import java.io.FileOutputStream
 import java.io.InputStreamReader
 import java.io.OutputStreamWriter
 import java.net.HttpURLConnection
-import java.net.InetSocketAddress
-import java.net.Socket
 import java.net.URL
 import java.util.Locale
 import java.util.UUID
-import java.util.concurrent.Executors
 import java.util.zip.ZipEntry
 import java.util.zip.ZipOutputStream
-import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
@@ -181,7 +165,8 @@ private data class SavedThread(
 )
 
 private data class StudioConfig(
-    val hostUrl: String = "http://10.0.0.134:11434",
+    val hostUrl: String = "http://127.0.0.1:11434",
+    val runTarget: RunTarget = RunTarget.PHONE_LOCAL,
     val cpuCores: Int = 5,
     val gpuLayers: Int = 99,
     val maxTokens: Int = 512,
@@ -192,12 +177,7 @@ private data class StudioConfig(
     val conciseDiffMode: Boolean = true,
     val singleHtmlAppMode: Boolean = false,
     val autoBundleZip: Boolean = true,
-    val lineCheckpointTracker: Boolean = true,
-    val speechRate: Float = 0.95f,
-    val speechPitch: Float = 1.0f,
-    val preferredVoiceName: String = "",
-    val voiceServerUrl: String = "",
-    val voiceClipName: String = ""
+    val lineCheckpointTracker: Boolean = true
 )
 
 private fun estimateTokensPerSec(charCount: Int, elapsedSec: Int): Float {
@@ -215,19 +195,6 @@ private fun estimateCompletionPercent(
     val safeTotal = estimatedTotalSec.coerceAtLeast(1)
     val raw = ((elapsedSec.toFloat() / safeTotal.toFloat()) * 95f).toInt()
     return raw.coerceIn(1, 95)
-}
-
-private fun readMediaDurationSeconds(context: Context, uri: Uri): Double {
-    val retriever = MediaMetadataRetriever()
-    return try {
-        retriever.setDataSource(context, uri)
-        val ms = retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_DURATION)?.toLongOrNull() ?: 0L
-        ms / 1000.0
-    } catch (_: Exception) {
-        0.0
-    } finally {
-        runCatching { retriever.release() }
-    }
 }
 
 private fun exportTextFallbackToDownloads(
@@ -249,90 +216,15 @@ private fun exportTextFallbackToDownloads(
     }.getOrNull()
 }
 
-@Composable
-internal fun BlockingVoiceCloneTimerDialog(
-    clipName: String,
-    totalSeconds: Int = 180,
-    remainingSeconds: Int,
-    completed: Boolean,
-    onDismissWhenCompleted: () -> Unit
-) {
-    val safeTotal = totalSeconds.coerceAtLeast(1)
-    val clampedRemaining = remainingSeconds.coerceIn(0, safeTotal)
-    val progress = 1f - (clampedRemaining.toFloat() / safeTotal.toFloat())
-    val mins = clampedRemaining / 60
-    val secs = clampedRemaining % 60
-
-    Dialog(
-        onDismissRequest = {
-            if (completed && clampedRemaining == 0) onDismissWhenCompleted()
-        },
-        properties = DialogProperties(
-            dismissOnBackPress = false,
-            dismissOnClickOutside = false
-        )
-    ) {
-        Surface(
-            shape = RoundedCornerShape(20.dp),
-            color = MaterialTheme.colorScheme.surface,
-            modifier = Modifier.fillMaxWidth()
-        ) {
-            Column(
-                modifier = Modifier.padding(24.dp),
-                horizontalAlignment = Alignment.CenterHorizontally,
-                verticalArrangement = Arrangement.spacedBy(14.dp)
-            ) {
-                Text(
-                    text = if (completed && clampedRemaining == 0) {
-                        "Completed voice cloning"
-                    } else {
-                        "Cloning Voice Profile — Stay on Screen"
-                    },
-                    fontWeight = FontWeight.Bold,
-                    style = MaterialTheme.typography.titleMedium
-                )
-                Text(
-                    text = if (completed && clampedRemaining == 0) {
-                        "Profile locked for \"$clipName\". You can now send messages and cache speech."
-                    } else {
-                        "Keep this screen open while \"$clipName\" processes so background tasks don't slow it down."
-                    },
-                    style = MaterialTheme.typography.bodySmall
-                )
-                Box(contentAlignment = Alignment.Center, modifier = Modifier.size(132.dp)) {
-                    CircularProgressIndicator(
-                        progress = { progress.coerceIn(0f, 1f) },
-                        modifier = Modifier.fillMaxSize(),
-                        strokeWidth = 8.dp
-                    )
-                    Text(
-                        text = "%d:%02d".format(mins, secs),
-                        style = MaterialTheme.typography.headlineSmall,
-                        fontWeight = FontWeight.Bold
-                    )
-                }
-                LinearProgressIndicator(
-                    progress = { progress.coerceIn(0f, 1f) },
-                    modifier = Modifier.fillMaxWidth()
-                )
-                Text(
-                    text = "${(progress * 100f).toInt().coerceIn(0, 100)}% complete",
-                    style = MaterialTheme.typography.labelMedium
-                )
-                if (completed && clampedRemaining == 0) {
-                    Button(onClick = onDismissWhenCompleted) {
-                        Text("Continue")
-                    }
-                }
-            }
-        }
-    }
-}
-
 private fun loadConfig(context: Context): StudioConfig {
     val prefs = context.getSharedPreferences("studio_prefs", Context.MODE_PRIVATE)
+    val savedTarget = runCatching {
+        RunTarget.valueOf(prefs.getString("run_target", RunTarget.PHONE_LOCAL.name) ?: RunTarget.PHONE_LOCAL.name)
+    }.getOrDefault(RunTarget.PHONE_LOCAL)
+
     return StudioConfig(
-        hostUrl = prefs.getString("host_url", "http://10.0.0.134:11434") ?: "http://10.0.0.134:11434",
+        hostUrl = prefs.getString("host_url", "http://127.0.0.1:11434") ?: "http://127.0.0.1:11434",
+        runTarget = savedTarget,
         cpuCores = prefs.getInt("cpu_cores", 5).coerceIn(1, 32),
         gpuLayers = prefs.getInt("gpu_layers", 99).coerceIn(0, 200),
         maxTokens = prefs.getInt("max_tokens", 512).coerceIn(64, 32768),
@@ -343,18 +235,14 @@ private fun loadConfig(context: Context): StudioConfig {
         conciseDiffMode = prefs.getBoolean("concise_diff", true),
         singleHtmlAppMode = prefs.getBoolean("single_html_app", false),
         autoBundleZip = prefs.getBoolean("auto_bundle_zip", true),
-        lineCheckpointTracker = prefs.getBoolean("line_checkpoint", true),
-        speechRate = prefs.getFloat("speech_rate", 0.95f).coerceIn(0.6f, 1.6f),
-        speechPitch = prefs.getFloat("speech_pitch", 1.0f).coerceIn(0.75f, 1.30f),
-        preferredVoiceName = prefs.getString("preferred_voice_name", "") ?: "",
-        voiceServerUrl = prefs.getString("voice_server_url", "") ?: "",
-        voiceClipName = prefs.getString("voice_clip_name", "") ?: ""
+        lineCheckpointTracker = prefs.getBoolean("line_checkpoint", true)
     )
 }
 
 private fun saveConfig(context: Context, cfg: StudioConfig) {
     context.getSharedPreferences("studio_prefs", Context.MODE_PRIVATE).edit()
         .putString("host_url", cfg.hostUrl.trim())
+        .putString("run_target", cfg.runTarget.name)
         .putInt("cpu_cores", cfg.cpuCores)
         .putInt("gpu_layers", cfg.gpuLayers)
         .putInt("max_tokens", cfg.maxTokens)
@@ -366,11 +254,6 @@ private fun saveConfig(context: Context, cfg: StudioConfig) {
         .putBoolean("single_html_app", cfg.singleHtmlAppMode)
         .putBoolean("auto_bundle_zip", cfg.autoBundleZip)
         .putBoolean("line_checkpoint", cfg.lineCheckpointTracker)
-        .putFloat("speech_rate", cfg.speechRate)
-        .putFloat("speech_pitch", cfg.speechPitch)
-        .putString("preferred_voice_name", cfg.preferredVoiceName)
-        .putString("voice_server_url", cfg.voiceServerUrl.trim())
-        .putString("voice_clip_name", cfg.voiceClipName.trim())
         .apply()
 }
 
@@ -449,169 +332,6 @@ private fun normalizeHost(raw: String): String {
     return if (Regex(":\\d+$").containsMatchIn(withScheme)) withScheme else "$withScheme:11434"
 }
 
-private fun normalizeVoiceServerEndpoint(raw: String): String {
-    val trimmed = raw.trim().removeSuffix("/")
-    val withScheme = if (trimmed.startsWith("http://") || trimmed.startsWith("https://")) {
-        trimmed
-    } else {
-        "http://$trimmed"
-    }
-    return if (withScheme.endsWith("/tts")) withScheme else "$withScheme/tts"
-}
-
-private suspend fun fetchClonedAudioFile(
-    context: Context,
-    serverUrl: String,
-    text: String,
-    voiceClipName: String
-): File = withContext(Dispatchers.IO) {
-    val endpoint = URL(normalizeVoiceServerEndpoint(serverUrl))
-    val payload = JSONObject().apply {
-        put("text", text.take(1500))
-        if (voiceClipName.isNotBlank()) {
-            put("ref_audio_name", voiceClipName)
-        }
-    }
-    val conn = (endpoint.openConnection() as HttpURLConnection).apply {
-        requestMethod = "POST"
-        doOutput = true
-        connectTimeout = 5000
-        readTimeout = 30000
-        setRequestProperty("Content-Type", "application/json")
-    }
-    try {
-        OutputStreamWriter(conn.outputStream).use { writer ->
-            writer.write(payload.toString())
-            writer.flush()
-        }
-        if (conn.responseCode !in 200..299) {
-            error("Voice server HTTP ${conn.responseCode}")
-        }
-        val outFile = File(context.cacheDir, "cloned_speech_${System.currentTimeMillis()}.wav")
-        conn.inputStream.use { input ->
-            FileOutputStream(outFile).use { output ->
-                input.copyTo(output)
-            }
-        }
-        outFile
-    } finally {
-        conn.disconnect()
-    }
-}
-
-private fun syncLockedProfileFromConfig(
-    lockedVoiceManager: LockedVoiceManager,
-    config: StudioConfig
-): LockedVoiceProfile {
-    val existing = lockedVoiceManager.getLockedProfile()
-    val clipKey = config.voiceClipName.trim().ifBlank { existing?.refAudioName ?: "default_voice" }
-    val profileId = existing?.id ?: "profile_${clipKey.hashCode()}"
-    val profileName = existing?.name ?: clipKey.substringBeforeLast('.').ifBlank { "Locked Voice" }
-
-    val updated = LockedVoiceProfile(
-        id = profileId,
-        name = profileName,
-        refAudioName = clipKey,
-        speechRate = config.speechRate,
-        speechPitch = config.speechPitch,
-        locked = true
-    )
-    lockedVoiceManager.saveAndLockProfile(updated)
-    return updated
-}
-
-private fun handleSpeakToggleWithLockedCache(
-    context: Context,
-    scope: CoroutineScope,
-    msgId: String,
-    msgContent: String,
-    isSpeakingThis: Boolean,
-    config: StudioConfig,
-    lockedVoiceManager: LockedVoiceManager,
-    mediaPlayer: MediaPlayer,
-    tts: TextToSpeech,
-    ttsReady: Boolean,
-    stopAllAudio: () -> Unit,
-    onSpeakingStateChange: (String?) -> Unit,
-    onBannerError: (String?) -> Unit
-) {
-    if (isSpeakingThis) {
-        stopAllAudio()
-        return
-    }
-    if (msgContent.isBlank()) return
-
-    stopAllAudio()
-
-    if (config.voiceServerUrl.isNotBlank()) {
-        val activeProfile = syncLockedProfileFromConfig(lockedVoiceManager, config)
-        val cachedFile = lockedVoiceManager.cachedAudioFile(activeProfile.id, msgContent)
-        onSpeakingStateChange(msgId)
-
-        if (cachedFile.exists() && cachedFile.length() > 0L) {
-            lockedVoiceManager.playWavFile(
-                player = mediaPlayer,
-                wavFile = cachedFile,
-                onComplete = { onSpeakingStateChange(null) },
-                onError = { errMsg ->
-                    onSpeakingStateChange(null)
-                    onBannerError(errMsg)
-                }
-            )
-            return
-        }
-
-        scope.launch {
-            runCatching {
-                val downloadedFile = fetchClonedAudioFile(
-                    context = context,
-                    serverUrl = config.voiceServerUrl,
-                    text = msgContent,
-                    voiceClipName = activeProfile.refAudioName
-                )
-                withContext(Dispatchers.IO) {
-                    cachedFile.parentFile?.mkdirs()
-                    downloadedFile.inputStream().use { input ->
-                        cachedFile.outputStream().use { output ->
-                            input.copyTo(output)
-                        }
-                    }
-                    if (downloadedFile.exists() && downloadedFile.absolutePath != cachedFile.absolutePath) {
-                        downloadedFile.delete()
-                    }
-                }
-                cachedFile
-            }.onSuccess { wavFile ->
-                if (wavFile.exists() && wavFile.length() > 0L) {
-                    lockedVoiceManager.playWavFile(
-                        player = mediaPlayer,
-                        wavFile = wavFile,
-                        onComplete = { onSpeakingStateChange(null) },
-                        onError = { errMsg ->
-                            onSpeakingStateChange(null)
-                            onBannerError(errMsg)
-                        }
-                    )
-                } else {
-                    onSpeakingStateChange(null)
-                    onBannerError("Synthesized WAV file was empty.")
-                }
-            }.onFailure { err ->
-                onSpeakingStateChange(null)
-                onBannerError("Voice server error: ${err.message}")
-            }
-        }
-    } else if (ttsReady) {
-        resolveVoice(tts, config.preferredVoiceName)?.let { tts.voice = it }
-        tts.setSpeechRate(config.speechRate)
-        tts.setPitch(config.speechPitch)
-        tts.speak(msgContent, TextToSpeech.QUEUE_FLUSH, null, msgId)
-        onSpeakingStateChange(msgId)
-    } else {
-        Toast.makeText(context, "TTS engine not ready yet", Toast.LENGTH_SHORT).show()
-    }
-}
-
 private data class HostTelemetry(
     val models: List<String>,
     val activeModel: String?,
@@ -623,8 +343,8 @@ private suspend fun inspectHostTelemetry(baseUrl: String): HostTelemetry = withC
     val tagsUrl = URL("$base/api/tags")
     val tagsConn = (tagsUrl.openConnection() as HttpURLConnection).apply {
         requestMethod = "GET"
-        connectTimeout = 2500
-        readTimeout = 4000
+        connectTimeout = 1500
+        readTimeout = 2500
     }
     val modelList = mutableListOf<String>()
     try {
@@ -648,8 +368,8 @@ private suspend fun inspectHostTelemetry(baseUrl: String): HostTelemetry = withC
     runCatching {
         val psConn = (URL("$base/api/ps").openConnection() as HttpURLConnection).apply {
             requestMethod = "GET"
-            connectTimeout = 1500
-            readTimeout = 2000
+            connectTimeout = 1200
+            readTimeout = 1500
         }
         try {
             if (psConn.responseCode in 200..299) {
@@ -669,78 +389,6 @@ private suspend fun inspectHostTelemetry(baseUrl: String): HostTelemetry = withC
 
     HostTelemetry(models = modelList, activeModel = activeModel, vramSizeMb = vramMb)
 }
-
-@Suppress("DEPRECATION")
-private fun wifiSubnetPrefix(context: Context): String? {
-    return runCatching {
-        val wm = context.applicationContext.getSystemService(Context.WIFI_SERVICE) as? WifiManager
-        val ipInt = wm?.dhcpInfo?.ipAddress ?: 0
-        if (ipInt == 0) return@runCatching null
-        val b1 = ipInt and 0xff
-        val b2 = (ipInt shr 8) and 0xff
-        val b3 = (ipInt shr 16) and 0xff
-        "$b1.$b2.$b3"
-    }.getOrNull()
-}
-
-private suspend fun discoverOllamaOnLan(context: Context, currentHost: String): String? =
-    withContext(Dispatchers.IO) {
-        val candidates = linkedSetOf<String>()
-        val currentStripped = normalizeHost(currentHost)
-            .removePrefix("http://")
-            .removePrefix("https://")
-            .substringBefore(":")
-        if (currentStripped.isNotBlank()) candidates.add(currentStripped)
-
-        val prefix = wifiSubnetPrefix(context)
-        if (prefix != null && prefix != "0.0.0") {
-            for (hostLast in 1..254) candidates.add("$prefix.$hostLast")
-        } else {
-            listOf("10.0.0", "192.168.1", "192.168.0").forEach { p ->
-                for (hostLast in 1..254) candidates.add("$p.$hostLast")
-            }
-        }
-
-        val executor = Executors.newFixedThreadPool(24)
-        var foundIp: String? = null
-        val lock = Any()
-
-        try {
-            val futures = candidates.map { ip ->
-                executor.submit {
-                    synchronized(lock) { if (foundIp != null) return@submit }
-                    val open = runCatching {
-                        Socket().use { sock ->
-                            sock.connect(InetSocketAddress(ip, 11434), 180)
-                            true
-                        }
-                    }.getOrDefault(false)
-                    if (open) {
-                        val ok = runCatching {
-                            val c = (URL("http://$ip:11434/api/tags").openConnection() as HttpURLConnection).apply {
-                                connectTimeout = 500
-                                readTimeout = 800
-                            }
-                            try {
-                                c.responseCode in 200..299
-                            } finally {
-                                c.disconnect()
-                            }
-                        }.getOrDefault(false)
-                        if (ok) {
-                            synchronized(lock) {
-                                if (foundIp == null) foundIp = "http://$ip:11434"
-                            }
-                        }
-                    }
-                }
-            }
-            futures.forEach { runCatching { it.get() } }
-        } finally {
-            executor.shutdownNow()
-        }
-        foundIp
-    }
 
 private fun createTempPhotoUri(context: Context): Uri? {
     return runCatching {
@@ -834,7 +482,7 @@ private fun queryDisplayName(context: Context, uri: Uri): String? {
 }
 
 private fun inspectAttachment(context: Context, uri: Uri): AttachmentPreview {
-    var displayName = queryDisplayName(context, uri) ?: "attachment"
+    val displayName = queryDisplayName(context, uri) ?: "attachment"
     var sizeBytes = 0L
     context.contentResolver.query(uri, arrayOf(OpenableColumns.SIZE), null, null, null)
         ?.use { cursor ->
@@ -984,24 +632,6 @@ private fun writeFilesAndOptionalZip(
     return summary to zipPath
 }
 
-private fun availableEnglishVoices(tts: TextToSpeech): List<Voice> {
-    val all = runCatching { tts.voices }.getOrNull().orEmpty()
-    return all
-        .filter { it.locale.language == Locale.ENGLISH.language }
-        .sortedBy { it.name }
-}
-
-private fun resolveVoice(tts: TextToSpeech, preferredName: String): Voice? {
-    val voices = availableEnglishVoices(tts)
-    if (voices.isEmpty()) return null
-    if (preferredName.isNotBlank()) {
-        voices.firstOrNull { it.name == preferredName }?.let { return it }
-    }
-    return voices.firstOrNull { !it.isNetworkConnectionRequired && it.quality >= Voice.QUALITY_HIGH }
-        ?: voices.firstOrNull { !it.isNetworkConnectionRequired }
-        ?: voices.firstOrNull()
-}
-
 private fun formatLineCheckpoint(lineCount: Int): Int {
     if (lineCount <= 1) return 1
     return (lineCount / 10) * 10
@@ -1014,6 +644,10 @@ fun ChatScreen() {
     val scope = rememberCoroutineScope()
 
     var config by remember { mutableStateOf(loadConfig(context)) }
+    var phoneIp by remember { mutableStateOf<String?>(null) }
+    var detectedLaptopIp by remember { mutableStateOf<String?>(null) }
+    var laptopOnline by remember { mutableStateOf(false) }
+
     val savedThreads = remember { mutableStateListOf<SavedThread>().apply { addAll(loadThreads(context)) } }
     var activeThreadId by rememberSaveable { mutableStateOf(UUID.randomUUID().toString()) }
 
@@ -1037,58 +671,12 @@ fun ChatScreen() {
     var livePercent by remember { mutableStateOf(0) }
     var userScrolledAway by rememberSaveable { mutableStateOf(false) }
 
-    var cloneLockActive by rememberSaveable { mutableStateOf(false) }
-    var cloneTotalSeconds by rememberSaveable { mutableStateOf(180) }
-    var cloneRemainingSeconds by rememberSaveable { mutableStateOf(0) }
-    var cloneCompleted by rememberSaveable { mutableStateOf(false) }
-    var cloneTargetClipName by rememberSaveable { mutableStateOf("") }
-
     var bannerError by remember { mutableStateOf<String?>(null) }
     var statusNote by remember { mutableStateOf<String?>(null) }
     var scanningLan by remember { mutableStateOf(false) }
 
     var settingsOpen by remember { mutableStateOf(false) }
     var historyOpen by remember { mutableStateOf(false) }
-    var speakingMessageId by remember { mutableStateOf<String?>(null) }
-
-    val lockedVoiceManager = remember(context) { LockedVoiceManager(context) }
-    val mediaPlayer = remember { MediaPlayer() }
-    var ttsReady by remember { mutableStateOf(false) }
-    val tts = remember {
-        var instance: TextToSpeech? = null
-        instance = TextToSpeech(context) { status ->
-            if (status == TextToSpeech.SUCCESS) {
-                instance?.language = Locale.US
-                resolveVoice(instance!!, config.preferredVoiceName)?.let { instance?.voice = it }
-                instance?.setSpeechRate(config.speechRate)
-                instance?.setPitch(config.speechPitch)
-                ttsReady = true
-            }
-        }
-        instance
-    }
-
-    fun stopAllAudio() {
-        runCatching {
-            if (mediaPlayer.isPlaying) mediaPlayer.stop()
-            mediaPlayer.reset()
-        }
-        runCatching { tts.stop() }
-        speakingMessageId = null
-    }
-
-    DisposableEffect(Unit) {
-        onDispose {
-            runCatching {
-                if (mediaPlayer.isPlaying) mediaPlayer.stop()
-                mediaPlayer.release()
-            }
-            runCatching {
-                tts.stop()
-                tts.shutdown()
-            }
-        }
-    }
 
     LaunchedEffect(streaming) {
         if (streaming) {
@@ -1101,32 +689,6 @@ fun ChatScreen() {
                 livePercent = estimateCompletionPercent(elapsedSec, estimatedTotalSec, isFinished = false)
             }
         }
-    }
-
-    LaunchedEffect(cloneLockActive) {
-        if (cloneLockActive) {
-            cloneCompleted = false
-            while (cloneRemainingSeconds > 0) {
-                delay(1000L)
-                cloneRemainingSeconds = (cloneRemainingSeconds - 1).coerceAtLeast(0)
-            }
-            syncLockedProfileFromConfig(lockedVoiceManager, config)
-            cloneCompleted = true
-        }
-    }
-
-    if (cloneLockActive) {
-        BlockingVoiceCloneTimerDialog(
-            clipName = cloneTargetClipName.ifBlank { config.voiceClipName.ifBlank { "voice_clip" } },
-            totalSeconds = cloneTotalSeconds,
-            remainingSeconds = cloneRemainingSeconds,
-            completed = cloneCompleted,
-            onDismissWhenCompleted = {
-                cloneLockActive = false
-                cloneCompleted = false
-                statusNote = "Completed voice cloning"
-            }
-        )
     }
 
     val createZipDocLauncher = rememberLauncherForActivityResult(
@@ -1145,10 +707,9 @@ fun ChatScreen() {
         }
     }
 
-    fun refreshModels(preferFastModel: Boolean = false) {
+    fun refreshModelsForUrl(baseUrl: String, preferFastModel: Boolean = false) {
         scope.launch {
-            bannerError = null
-            runCatching { inspectHostTelemetry(config.hostUrl) }
+            runCatching { inspectHostTelemetry(baseUrl) }
                 .onSuccess { info ->
                     models.clear()
                     models.addAll(info.models)
@@ -1162,9 +723,95 @@ fun ChatScreen() {
                     val vramPart = info.vramSizeMb?.let { " • VRAM ${it}MB" }.orEmpty()
                     statusNote = "Ready (${selectedModel ?: "none"})$vramPart"
                 }
-                .onFailure { err ->
-                    bannerError = "Cannot reach ${normalizeHost(config.hostUrl)}: ${err.message ?: "connection error"}"
+                .onFailure {
+                    if (config.runTarget == RunTarget.LAPTOP) {
+                        laptopOnline = false
+                        config = config.copy(runTarget = RunTarget.PHONE_LOCAL)
+                        saveConfig(context, config)
+                        statusNote = "Laptop bypassed — using Phone Local (127.0.0.1:11434)"
+                    } else {
+                        statusNote = "Phone Local ready (start local model engine on 127.0.0.1:11434)"
+                    }
                 }
+        }
+    }
+
+    fun refreshEndpointsAndModels(preferFastModel: Boolean = false) {
+        scope.launch {
+            scanningLan = true
+            bannerError = null
+            val currentPhoneIp = detectPhoneIpv4()
+            phoneIp = currentPhoneIp
+
+            val manualLaptopCandidate = config.hostUrl
+                .removePrefix("http://")
+                .removePrefix("https://")
+                .substringBefore("/")
+                .substringBefore(":")
+                .takeIf { it.isNotBlank() && it != "127.0.0.1" && it != currentPhoneIp }
+
+            val foundLaptopIp = discoverLaptopOllamaIp(
+                phoneIp = currentPhoneIp,
+                preferredLaptopIp = detectedLaptopIp ?: manualLaptopCandidate
+            )
+            val reachable = foundLaptopIp != null && isOllamaHostReachable(foundLaptopIp)
+            detectedLaptopIp = if (reachable) foundLaptopIp else null
+            laptopOnline = reachable
+
+            if (reachable && foundLaptopIp != null) {
+                config = config.copy(hostUrl = "http://$foundLaptopIp:11434")
+                saveConfig(context, config)
+            } else if (config.runTarget == RunTarget.LAPTOP) {
+                config = config.copy(runTarget = RunTarget.PHONE_LOCAL)
+                saveConfig(context, config)
+            }
+
+            scanningLan = false
+            val targetUrl = resolveActiveOllamaUrl(
+                target = config.runTarget,
+                detectedLaptopIp = detectedLaptopIp,
+                manualLaptopIp = manualLaptopCandidate.orEmpty()
+            ) ?: "http://127.0.0.1:11434"
+            refreshModelsForUrl(targetUrl, preferFastModel = preferFastModel)
+        }
+    }
+
+    fun selectComputeTarget(newTarget: RunTarget) {
+        scope.launch {
+            bannerError = null
+            if (newTarget == RunTarget.LAPTOP) {
+                val currentPhoneIp = phoneIp ?: detectPhoneIpv4().also { phoneIp = it }
+                val candidateIp = detectedLaptopIp ?: config.hostUrl
+                    .removePrefix("http://")
+                    .removePrefix("https://")
+                    .substringBefore("/")
+                    .substringBefore(":")
+                    .takeIf { it.isNotBlank() && it != "127.0.0.1" && it != currentPhoneIp }
+
+                val reachable = candidateIp != null && isOllamaHostReachable(candidateIp)
+                if (reachable && candidateIp != null) {
+                    detectedLaptopIp = candidateIp
+                    laptopOnline = true
+                    config = config.copy(
+                        runTarget = RunTarget.LAPTOP,
+                        hostUrl = "http://$candidateIp:11434"
+                    )
+                    saveConfig(context, config)
+                    refreshModelsForUrl("http://$candidateIp:11434")
+                } else {
+                    // Laptop off/unreachable: bypass silently without error banner or IP conflict
+                    laptopOnline = false
+                    config = config.copy(runTarget = RunTarget.PHONE_LOCAL)
+                    saveConfig(context, config)
+                    statusNote = "Laptop offline — bypassed to Phone Local (127.0.0.1:11434)"
+                    refreshModelsForUrl("http://127.0.0.1:11434")
+                }
+            } else {
+                config = config.copy(runTarget = RunTarget.PHONE_LOCAL)
+                saveConfig(context, config)
+                statusNote = "Phone Local active (127.0.0.1:11434)"
+                refreshModelsForUrl("http://127.0.0.1:11434")
+            }
         }
     }
 
@@ -1181,28 +828,8 @@ fun ChatScreen() {
             lineCheckpointTracker = true
         )
         saveConfig(context, config)
-        syncLockedProfileFromConfig(lockedVoiceManager, config)
-        refreshModels(preferFastModel = true)
+        refreshEndpointsAndModels(preferFastModel = true)
         statusNote = "Max Speed tuned safely (CPU 5, GPU 99, ctx 1536, max 512)"
-    }
-
-    fun scanForLaptop() {
-        scope.launch {
-            scanningLan = true
-            bannerError = null
-            statusNote = "Scanning Wi-Fi for Ollama (:11434)..."
-            val found = discoverOllamaOnLan(context, config.hostUrl)
-            scanningLan = false
-            if (found != null) {
-                config = config.copy(hostUrl = found)
-                saveConfig(context, config)
-                statusNote = "Detected Ollama at $found"
-                refreshModels()
-            } else {
-                statusNote = null
-                bannerError = "No Ollama server found on Wi-Fi port 11434"
-            }
-        }
     }
 
     fun saveCurrentThreadSnapshot() {
@@ -1221,7 +848,6 @@ fun ChatScreen() {
 
     fun startNewThread() {
         saveCurrentThreadSnapshot()
-        stopAllAudio()
         streamJob?.cancel()
         streaming = false
         userScrolledAway = false
@@ -1233,7 +859,6 @@ fun ChatScreen() {
 
     fun openSavedThread(thread: SavedThread) {
         saveCurrentThreadSnapshot()
-        stopAllAudio()
         streamJob?.cancel()
         streaming = false
         userScrolledAway = false
@@ -1264,14 +889,7 @@ fun ChatScreen() {
     }
 
     LaunchedEffect(Unit) {
-        syncLockedProfileFromConfig(lockedVoiceManager, config)
-        val auto = discoverOllamaOnLan(context, config.hostUrl)
-        if (auto != null && auto != config.hostUrl) {
-            config = config.copy(hostUrl = auto)
-            saveConfig(context, config)
-            statusNote = "Auto-detected $auto"
-        }
-        refreshModels()
+        refreshEndpointsAndModels()
     }
 
     val listState = rememberLazyListState()
@@ -1286,12 +904,95 @@ fun ChatScreen() {
         }
     }
 
+    suspend fun streamOllamaGeneration(
+        baseUrl: String,
+        modelToUse: String,
+        combinedPrompt: String,
+        imagePayload: String?,
+        assistantIdx: Int
+    ): Boolean = withContext(Dispatchers.IO) {
+        var completedCleanly = false
+        val endpoint = URL("${normalizeHost(baseUrl)}/api/generate")
+        val optionsJson = JSONObject().apply {
+            put("num_thread", config.cpuCores)
+            put("num_gpu", config.gpuLayers)
+            put("num_predict", config.maxTokens)
+            put("num_ctx", config.contextSize)
+            put("temperature", config.temperature)
+            put("top_p", config.topP)
+        }
+        val payload = JSONObject().apply {
+            put("model", modelToUse)
+            put("prompt", combinedPrompt.ifBlank { "Describe this image." })
+            put("stream", true)
+            put("keep_alive", config.keepAlive)
+            put("options", optionsJson)
+            if (imagePayload != null) {
+                put("images", JSONArray().put(imagePayload))
+            }
+        }
+
+        val conn = (endpoint.openConnection() as HttpURLConnection).apply {
+            requestMethod = "POST"
+            doOutput = true
+            connectTimeout = 2500
+            readTimeout = 0
+            setRequestProperty("Content-Type", "application/json")
+        }
+
+        try {
+            OutputStreamWriter(conn.outputStream).use { writer ->
+                writer.write(payload.toString())
+                writer.flush()
+            }
+
+            if (conn.responseCode !in 200..299) {
+                return@withContext false
+            }
+
+            val acc = StringBuilder()
+            BufferedReader(InputStreamReader(conn.inputStream)).use { reader ->
+                var line: String?
+                while (reader.readLine().also { line = it } != null) {
+                    val trimmed = line?.trim().orEmpty()
+                    if (trimmed.isEmpty()) continue
+                    val chunk = runCatching { JSONObject(trimmed) }.getOrNull() ?: continue
+                    val token = chunk.optString("response", "")
+                    if (token.isNotEmpty()) {
+                        acc.append(token)
+                        val snapshot = acc.toString()
+                        val lineCount = snapshot.count { it == '\n' } + 1
+                        val stepCheckpoint = formatLineCheckpoint(lineCount)
+                        val tps = estimateTokensPerSec(snapshot.length, elapsedSec)
+                        val pct = estimateCompletionPercent(elapsedSec, estimatedTotalSec, isFinished = false)
+                        withContext(Dispatchers.Main) {
+                            checkpointLine = stepCheckpoint
+                            liveLineCount = lineCount
+                            liveTokensPerSec = tps
+                            livePercent = pct
+                            if (assistantIdx in messages.indices) {
+                                messages[assistantIdx] = messages[assistantIdx].copy(content = snapshot)
+                            }
+                        }
+                    }
+                    if (chunk.optBoolean("done", false)) {
+                        completedCleanly = true
+                        break
+                    }
+                }
+            }
+        } finally {
+            conn.disconnect()
+        }
+        completedCleanly
+    }
+
     fun sendPrompt() {
         val rawText = input.trim()
         val att = attachment
         if (rawText.isEmpty() && att == null) return
 
-        val modelToUse = selectedModel ?: models.firstOrNull() ?: "qwen2.5-coder:3b"
+        val modelToUse = selectedModel ?: models.firstOrNull() ?: "qwen3.5:4b"
         val combinedPrompt = buildString {
             if (config.singleHtmlAppMode) {
                 append("[Format Rule: Output ONE complete single-file HTML/CSS/JS app instead of splitting into many files.]\n")
@@ -1342,89 +1043,43 @@ fun ChatScreen() {
         streamJob = scope.launch {
             var completedCleanly = false
             runCatching {
-                withContext(Dispatchers.IO) {
-                    val endpoint = URL("${normalizeHost(config.hostUrl)}/api/generate")
-                    val optionsJson = JSONObject().apply {
-                        put("num_thread", config.cpuCores)
-                        put("num_gpu", config.gpuLayers)
-                        put("num_predict", config.maxTokens)
-                        put("num_ctx", config.contextSize)
-                        put("temperature", config.temperature)
-                        put("top_p", config.topP)
-                    }
-                    val payload = JSONObject().apply {
-                        put("model", modelToUse)
-                        put("prompt", combinedPrompt.ifBlank { "Describe this image." })
-                        put("stream", true)
-                        put("keep_alive", config.keepAlive)
-                        put("options", optionsJson)
-                        if (imagePayload != null) {
-                            put("images", JSONArray().put(imagePayload))
-                        }
-                    }
+                val manualIp = config.hostUrl
+                    .removePrefix("http://")
+                    .removePrefix("https://")
+                    .substringBefore("/")
+                    .substringBefore(":")
+                    .takeIf { it != "127.0.0.1" && it != phoneIp }
+                    .orEmpty()
 
-                    val conn = (endpoint.openConnection() as HttpURLConnection).apply {
-                        requestMethod = "POST"
-                        doOutput = true
-                        connectTimeout = 5000
-                        readTimeout = 0
-                        setRequestProperty("Content-Type", "application/json")
+                val result = sendPromptWithLocalFallback(
+                    prompt = combinedPrompt,
+                    runTarget = config.runTarget,
+                    detectedLaptopIp = detectedLaptopIp,
+                    manualLaptopIp = manualIp,
+                    onFallbackToPhoneLocal = {
+                        laptopOnline = false
+                        config = config.copy(runTarget = RunTarget.PHONE_LOCAL)
+                        saveConfig(context, config)
+                    },
+                    onStatusMessage = { note ->
+                        statusNote = note
+                    },
+                    callOllamaChat = { baseUrl, _ ->
+                        val ok = streamOllamaGeneration(
+                            baseUrl = baseUrl,
+                            modelToUse = modelToUse,
+                            combinedPrompt = combinedPrompt,
+                            imagePayload = imagePayload,
+                            assistantIdx = assistantIdx
+                        )
+                        if (!ok) error("Generation failed on $baseUrl")
+                        "ok"
                     }
-
-                    try {
-                        OutputStreamWriter(conn.outputStream).use { writer ->
-                            writer.write(payload.toString())
-                            writer.flush()
-                        }
-
-                        if (conn.responseCode !in 200..299) {
-                            val errBody = runCatching {
-                                conn.errorStream?.bufferedReader()?.use { it.readText() }
-                            }.getOrNull()
-                            withContext(Dispatchers.Main) {
-                                bannerError = "Ollama HTTP ${conn.responseCode}: ${errBody ?: "request failed"}"
-                            }
-                            return@withContext
-                        }
-
-                        val acc = StringBuilder()
-                        BufferedReader(InputStreamReader(conn.inputStream)).use { reader ->
-                            var line: String?
-                            while (reader.readLine().also { line = it } != null) {
-                                val trimmed = line?.trim().orEmpty()
-                                if (trimmed.isEmpty()) continue
-                                val chunk = runCatching { JSONObject(trimmed) }.getOrNull() ?: continue
-                                val token = chunk.optString("response", "")
-                                if (token.isNotEmpty()) {
-                                    acc.append(token)
-                                    val snapshot = acc.toString()
-                                    val lineCount = snapshot.count { it == '\n' } + 1
-                                    val stepCheckpoint = formatLineCheckpoint(lineCount)
-                                    val tps = estimateTokensPerSec(snapshot.length, elapsedSec)
-                                    val pct = estimateCompletionPercent(elapsedSec, estimatedTotalSec, isFinished = false)
-                                    withContext(Dispatchers.Main) {
-                                        checkpointLine = stepCheckpoint
-                                        liveLineCount = lineCount
-                                        liveTokensPerSec = tps
-                                        livePercent = pct
-                                        if (assistantIdx in messages.indices) {
-                                            messages[assistantIdx] = messages[assistantIdx].copy(content = snapshot)
-                                        }
-                                    }
-                                }
-                                if (chunk.optBoolean("done", false)) {
-                                    completedCleanly = true
-                                    break
-                                }
-                            }
-                        }
-                    } finally {
-                        conn.disconnect()
-                    }
-                }
+                )
+                completedCleanly = result != null
             }.onFailure { err ->
                 if (err !is kotlinx.coroutines.CancellationException) {
-                    bannerError = err.message ?: "Generation stopped with an error"
+                    statusNote = "Local engine unavailable — no laptop required"
                 }
             }
 
@@ -1479,7 +1134,7 @@ fun ChatScreen() {
                     IconButton(onClick = { historyOpen = true }) {
                         Icon(Icons.Default.History, contentDescription = "Chat history")
                     }
-                    IconButton(onClick = { refreshModels(preferFastModel = false) }) {
+                    IconButton(onClick = { refreshEndpointsAndModels(preferFastModel = false) }) {
                         Icon(Icons.Default.Refresh, contentDescription = "Refresh models")
                     }
                     IconButton(onClick = { startNewThread() }) {
@@ -1514,7 +1169,7 @@ fun ChatScreen() {
                 )
 
                 TextButton(
-                    onClick = { scanForLaptop() },
+                    onClick = { refreshEndpointsAndModels() },
                     enabled = !scanningLan
                 ) {
                     Icon(
@@ -1531,6 +1186,17 @@ fun ChatScreen() {
                     )
                 }
             }
+
+            LocalComputeTargetSelector(
+                runTarget = config.runTarget,
+                phoneIp = phoneIp,
+                laptopIp = detectedLaptopIp,
+                laptopOnline = laptopOnline,
+                isScanning = scanningLan,
+                onSelectTarget = { selectComputeTarget(it) },
+                onRefreshIps = { refreshEndpointsAndModels() },
+                modifier = Modifier.padding(horizontal = 4.dp)
+            )
 
             if (streaming) {
                 Surface(
@@ -1612,32 +1278,13 @@ fun ChatScreen() {
                     verticalArrangement = Arrangement.spacedBy(12.dp)
                 ) {
                     items(messages, key = { it.id }) { msg ->
-                        val isSpeakingThis = speakingMessageId == msg.id
                         BubbleCard(
                             entry = msg,
-                            isSpeaking = isSpeakingThis,
                             onCopy = {
                                 val cm = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
                                 cm.setPrimaryClip(ClipData.newPlainText("message", msg.content))
                                 statusNote = "Copied message"
                                 Toast.makeText(context, "Copied to clipboard", Toast.LENGTH_SHORT).show()
-                            },
-                            onToggleSpeak = {
-                                handleSpeakToggleWithLockedCache(
-                                    context = context,
-                                    scope = scope,
-                                    msgId = msg.id,
-                                    msgContent = msg.content,
-                                    isSpeakingThis = isSpeakingThis,
-                                    config = config,
-                                    lockedVoiceManager = lockedVoiceManager,
-                                    mediaPlayer = mediaPlayer,
-                                    tts = tts,
-                                    ttsReady = ttsReady,
-                                    stopAllAudio = { stopAllAudio() },
-                                    onSpeakingStateChange = { speakingMessageId = it },
-                                    onBannerError = { bannerError = it }
-                                )
                             },
                             onExportTxtToDownloads = { entry ->
                                 val saved = exportTextFallbackToDownloads(
@@ -1888,6 +1535,7 @@ fun ChatScreen() {
 
     if (settingsOpen) {
         var hostDraft by rememberSaveable { mutableStateOf(config.hostUrl) }
+        var targetDraft by rememberSaveable { mutableStateOf(config.runTarget) }
         var coresVal by rememberSaveable { mutableStateOf(config.cpuCores.toFloat()) }
         var gpuVal by rememberSaveable { mutableStateOf(config.gpuLayers.toFloat()) }
         var maxTokensText by rememberSaveable { mutableStateOf(config.maxTokens.toString()) }
@@ -1899,35 +1547,6 @@ fun ChatScreen() {
         var singleHtmlFlag by rememberSaveable { mutableStateOf(config.singleHtmlAppMode) }
         var zipFlag by rememberSaveable { mutableStateOf(config.autoBundleZip) }
         var checkpointFlag by rememberSaveable { mutableStateOf(config.lineCheckpointTracker) }
-        var rateVal by rememberSaveable { mutableStateOf(config.speechRate) }
-        var pitchVal by rememberSaveable { mutableStateOf(config.speechPitch) }
-        var selectedVoiceDraft by rememberSaveable { mutableStateOf(config.preferredVoiceName) }
-        var voiceServerDraft by rememberSaveable { mutableStateOf(config.voiceServerUrl) }
-        var voiceClipDraft by rememberSaveable { mutableStateOf(config.voiceClipName) }
-        var voiceMenuOpen by rememberSaveable { mutableStateOf(false) }
-
-        val audioClipPicker = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
-            if (uri != null) {
-                val pickedName = queryDisplayName(context, uri)
-                    ?: uri.lastPathSegment?.substringAfterLast('/')
-                    ?: "reference_voice.wav"
-                voiceClipDraft = pickedName
-                val durationSec = readMediaDurationSeconds(context, uri)
-                if (durationSec in 15.0..30.0) {
-                    cloneTotalSeconds = 180
-                    cloneRemainingSeconds = 180
-                    cloneTargetClipName = pickedName
-                    cloneCompleted = false
-                    cloneLockActive = true
-                } else {
-                    statusNote = "Selected $pickedName (${"%.1f".format(durationSec)}s) — use 15–30s clip to trigger 3-min clone lock"
-                }
-            }
-        }
-
-        val voicesList = remember(ttsReady, settingsOpen) {
-            if (ttsReady) availableEnglishVoices(tts) else emptyList()
-        }
 
         AlertDialog(
             onDismissRequest = { settingsOpen = false },
@@ -1937,10 +1556,20 @@ fun ChatScreen() {
                     modifier = Modifier.verticalScroll(rememberScrollState()),
                     verticalArrangement = Arrangement.spacedBy(10.dp)
                 ) {
+                    LocalComputeTargetSelector(
+                        runTarget = targetDraft,
+                        phoneIp = phoneIp,
+                        laptopIp = detectedLaptopIp,
+                        laptopOnline = laptopOnline,
+                        isScanning = scanningLan,
+                        onSelectTarget = { targetDraft = it },
+                        onRefreshIps = { refreshEndpointsAndModels() }
+                    )
+
                     OutlinedTextField(
                         value = hostDraft,
                         onValueChange = { hostDraft = it },
-                        label = { Text("Laptop Ollama Host / IP") },
+                        label = { Text("Optional Laptop IP / Host") },
                         singleLine = true,
                         modifier = Modifier.fillMaxWidth()
                     )
@@ -1950,7 +1579,7 @@ fun ChatScreen() {
                         horizontalArrangement = Arrangement.spacedBy(8.dp)
                     ) {
                         OutlinedButton(
-                            onClick = { scanForLaptop() },
+                            onClick = { refreshEndpointsAndModels() },
                             modifier = Modifier.weight(1f)
                         ) {
                             Icon(Icons.Default.Search, contentDescription = null)
@@ -1960,6 +1589,7 @@ fun ChatScreen() {
                         OutlinedButton(
                             onClick = {
                                 applyBalancedMaxSpeed()
+                                targetDraft = config.runTarget
                                 coresVal = config.cpuCores.toFloat()
                                 gpuVal = config.gpuLayers.toFloat()
                                 maxTokensText = config.maxTokens.toString()
@@ -2108,114 +1738,6 @@ fun ChatScreen() {
                         }
                         Switch(checked = checkpointFlag, onCheckedChange = { checkpointFlag = it })
                     }
-
-                    HorizontalDivider()
-
-                    OutlinedTextField(
-                        value = voiceServerDraft,
-                        onValueChange = { voiceServerDraft = it },
-                        label = { Text("Voice Server URL (optional /tts)") },
-                        placeholder = { Text("Leave blank for Android TTS") },
-                        singleLine = true,
-                        modifier = Modifier.fillMaxWidth()
-                    )
-
-                    OutlinedTextField(
-                        value = voiceClipDraft,
-                        onValueChange = { voiceClipDraft = it },
-                        label = { Text("Reference Voice Clip Name") },
-                        placeholder = { Text("e.g. reference_voice.wav") },
-                        singleLine = true,
-                        modifier = Modifier.fillMaxWidth()
-                    )
-
-                    OutlinedButton(
-                        onClick = { audioClipPicker.launch(arrayOf("audio/*")) },
-                        modifier = Modifier.fillMaxWidth().defaultMinSize(minHeight = 48.dp)
-                    ) {
-                        Icon(Icons.Default.AudioFile, contentDescription = null)
-                        Spacer(modifier = Modifier.width(6.dp))
-                        Text("Pick Voice Clip File")
-                    }
-
-                    Text(
-                        text = "Installed TTS Voice",
-                        style = MaterialTheme.typography.bodyMedium,
-                        fontWeight = FontWeight.Medium
-                    )
-                    Box {
-                        OutlinedButton(
-                            onClick = { voiceMenuOpen = true },
-                            modifier = Modifier.fillMaxWidth().defaultMinSize(minHeight = 48.dp)
-                        ) {
-                            Text(
-                                text = if (selectedVoiceDraft.isBlank()) "Auto (Best Installed English Voice)" else selectedVoiceDraft,
-                                maxLines = 1,
-                                overflow = TextOverflow.Ellipsis,
-                                modifier = Modifier.weight(1f)
-                            )
-                            Icon(Icons.Default.ArrowDropDown, contentDescription = null)
-                        }
-                        DropdownMenu(expanded = voiceMenuOpen, onDismissRequest = { voiceMenuOpen = false }) {
-                            DropdownMenuItem(
-                                text = { Text("Auto (Best Installed English Voice)") },
-                                onClick = {
-                                    selectedVoiceDraft = ""
-                                    voiceMenuOpen = false
-                                }
-                            )
-                            voicesList.forEach { v ->
-                                DropdownMenuItem(
-                                    text = { Text("${v.name} (${v.locale})") },
-                                    onClick = {
-                                        selectedVoiceDraft = v.name
-                                        voiceMenuOpen = false
-                                    }
-                                )
-                            }
-                        }
-                    }
-
-                    Text(
-                        text = "Voice Speed: ${"%.2f".format(rateVal)}x",
-                        style = MaterialTheme.typography.bodyMedium
-                    )
-                    Slider(
-                        value = rateVal,
-                        onValueChange = { rateVal = it },
-                        valueRange = 0.75f..1.35f
-                    )
-
-                    Text(
-                        text = "Voice Pitch: ${"%.2f".format(pitchVal)}",
-                        style = MaterialTheme.typography.bodyMedium
-                    )
-                    Slider(
-                        value = pitchVal,
-                        onValueChange = { pitchVal = it },
-                        valueRange = 0.85f..1.15f
-                    )
-
-                    OutlinedButton(
-                        onClick = {
-                            if (ttsReady) {
-                                resolveVoice(tts, selectedVoiceDraft)?.let { tts.voice = it }
-                                tts.setSpeechRate(rateVal)
-                                tts.setPitch(pitchVal)
-                                tts.speak(
-                                    "Testing voice speed and pitch for calm, natural playback.",
-                                    TextToSpeech.QUEUE_FLUSH,
-                                    null,
-                                    "voice_preview"
-                                )
-                            }
-                        },
-                        modifier = Modifier.fillMaxWidth().defaultMinSize(minHeight = 48.dp)
-                    ) {
-                        Icon(Icons.Default.VolumeUp, contentDescription = null)
-                        Spacer(modifier = Modifier.width(6.dp))
-                        Text("Test Voice Sample")
-                    }
                 }
             },
             confirmButton = {
@@ -2225,6 +1747,7 @@ fun ChatScreen() {
                         val parsedCtx = ctxText.toIntOrNull()?.coerceIn(512, 65536) ?: config.contextSize
                         config = StudioConfig(
                             hostUrl = hostDraft.trim().ifBlank { config.hostUrl },
+                            runTarget = targetDraft,
                             cpuCores = coresVal.toInt().coerceIn(1, 32),
                             gpuLayers = gpuVal.toInt().coerceIn(0, 200),
                             maxTokens = parsedMax,
@@ -2235,22 +1758,11 @@ fun ChatScreen() {
                             conciseDiffMode = conciseFlag,
                             singleHtmlAppMode = singleHtmlFlag,
                             autoBundleZip = zipFlag,
-                            lineCheckpointTracker = checkpointFlag,
-                            speechRate = rateVal,
-                            speechPitch = pitchVal,
-                            preferredVoiceName = selectedVoiceDraft,
-                            voiceServerUrl = voiceServerDraft.trim(),
-                            voiceClipName = voiceClipDraft.trim()
+                            lineCheckpointTracker = checkpointFlag
                         )
                         saveConfig(context, config)
-                        syncLockedProfileFromConfig(lockedVoiceManager, config)
-                        if (ttsReady) {
-                            resolveVoice(tts, config.preferredVoiceName)?.let { tts.voice = it }
-                            tts.setSpeechRate(config.speechRate)
-                            tts.setPitch(config.speechPitch)
-                        }
                         settingsOpen = false
-                        refreshModels()
+                        selectComputeTarget(config.runTarget)
                     },
                     colors = ButtonDefaults.buttonColors(containerColor = Terracotta, contentColor = Color(0xFF140B07))
                 ) {
@@ -2458,9 +1970,7 @@ private fun StarterDeck(
 @Composable
 private fun BubbleCard(
     entry: ChatEntry,
-    isSpeaking: Boolean,
     onCopy: () -> Unit,
-    onToggleSpeak: () -> Unit,
     onExportTxtToDownloads: (ChatEntry) -> Unit,
     onDownloadZipToDownloads: (String) -> Unit,
     onSaveZipAs: (String) -> Unit,
@@ -2607,22 +2117,6 @@ private fun BubbleCard(
                     Icon(Icons.Default.ContentCopy, contentDescription = null, modifier = Modifier.size(16.dp))
                     Spacer(modifier = Modifier.width(4.dp))
                     Text("Copy", style = MaterialTheme.typography.labelMedium)
-                }
-                OutlinedButton(
-                    onClick = onToggleSpeak,
-                    contentPadding = PaddingValues(horizontal = 12.dp, vertical = 8.dp),
-                    modifier = Modifier.defaultMinSize(minHeight = 44.dp)
-                ) {
-                    Icon(
-                        if (isSpeaking) Icons.Default.VolumeOff else Icons.Default.VolumeUp,
-                        contentDescription = null,
-                        modifier = Modifier.size(16.dp)
-                    )
-                    Spacer(modifier = Modifier.width(4.dp))
-                    Text(
-                        if (isSpeaking) "Stop TTS" else "Listen",
-                        style = MaterialTheme.typography.labelMedium
-                    )
                 }
                 if (!isUser) {
                     OutlinedButton(
