@@ -14,7 +14,6 @@ import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
-import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.lazy.LazyColumn
@@ -43,7 +42,6 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
 import androidx.compose.material3.TopAppBarDefaults
-import androidx.compose.material3.darkColorScheme
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
@@ -61,26 +59,6 @@ import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.example.ollamachat.data.ChatMessage
 
-private val GeminiDarkColorScheme = darkColorScheme(
-    primary = Color(0xFF8AB4F8),
-    onPrimary = Color(0xFF062043),
-    primaryContainer = Color(0xFF1D3354),
-    onPrimaryContainer = Color(0xFFE5EFFD),
-    secondary = Color(0xFFA8C7FA),
-    onSecondary = Color(0xFF0B2246),
-    secondaryContainer = Color(0xFF1C2331),
-    onSecondaryContainer = Color(0xFFDDE6F5),
-    background = Color(0xFF0B0E14),
-    onBackground = Color(0xFFE7ECF5),
-    surface = Color(0xFF0B0E14),
-    onSurface = Color(0xFFE7ECF5),
-    surfaceVariant = Color(0xFF151B26),
-    onSurfaceVariant = Color(0xFF9EABBF),
-    outline = Color(0xFF283246),
-    errorContainer = Color(0xFF471B22),
-    onErrorContainer = Color(0xFFFFD9DD)
-)
-
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun ChatScreen(vm: ChatViewModel) {
@@ -93,145 +71,142 @@ fun ChatScreen(vm: ChatViewModel) {
         if (state.messages.isNotEmpty()) listState.scrollToItem(state.messages.lastIndex)
     }
 
-    MaterialTheme(colorScheme = GeminiDarkColorScheme) {
-        val screenGradient = Brush.verticalGradient(
-            colors = listOf(
-                Color(0xFF101724),
-                Color(0xFF0B0E14),
-                Color(0xFF080A0E)
-            )
+    val backdrop = Brush.verticalGradient(
+        colors = listOf(
+            Color(0xFF111927),
+            Color(0xFF090C12),
+            Color(0xFF06080C)
         )
+    )
 
-        Scaffold(
-            containerColor = Color.Transparent,
-            topBar = {
-                TopAppBar(
-                    colors = TopAppBarDefaults.topAppBarColors(
-                        containerColor = Color(0xFF0E131D).copy(alpha = 0.94f),
-                        titleContentColor = MaterialTheme.colorScheme.onSurface,
-                        actionIconContentColor = MaterialTheme.colorScheme.onSurfaceVariant
-                    ),
-                    title = {
-                        Text(
-                            text = "Chat",
-                            fontWeight = FontWeight.SemiBold,
-                            maxLines = 1,
-                            overflow = TextOverflow.Ellipsis
-                        )
-                    },
-                    actions = {
-                        IconButton(onClick = { vm.refreshModels() }) {
-                            Icon(Icons.Default.Refresh, contentDescription = "Refresh models")
-                        }
-                        IconButton(onClick = vm::clearChat) {
-                            Icon(Icons.Default.Delete, contentDescription = "Clear chat")
-                        }
-                        IconButton(onClick = vm::openSettings) {
-                            Icon(Icons.Default.Settings, contentDescription = "Settings")
-                        }
+    Scaffold(
+        containerColor = Color.Transparent,
+        topBar = {
+            TopAppBar(
+                colors = TopAppBarDefaults.topAppBarColors(
+                    containerColor = Color(0xFF0D121C),
+                    titleContentColor = MaterialTheme.colorScheme.onSurface,
+                    actionIconContentColor = MaterialTheme.colorScheme.onSurfaceVariant
+                ),
+                title = {
+                    Text(
+                        text = "Chat",
+                        fontWeight = FontWeight.SemiBold,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis
+                    )
+                },
+                actions = {
+                    IconButton(onClick = { vm.refreshModels() }) {
+                        Icon(Icons.Default.Refresh, contentDescription = "Refresh models")
                     }
-                )
-            }
-        ) { padding ->
-            Column(
-                modifier = Modifier
-                    .background(screenGradient)
-                    .padding(padding)
-                    .statusBarsPadding()
-                    .navigationBarsPadding()
-                    .imePadding()
-                    .fillMaxSize()
-            ) {
-                ModelSelector(
-                    models = state.models,
-                    selected = state.selectedModel,
-                    onSelect = vm::selectModel
-                )
-                state.connectionError?.let { Banner(it, onDismiss = null) }
-                state.chatError?.let { Banner(it, onDismiss = vm::dismissChatError) }
-
-                LazyColumn(
-                    state = listState,
-                    modifier = Modifier
-                        .weight(1f)
-                        .fillMaxWidth(),
-                    contentPadding = PaddingValues(horizontal = 14.dp, vertical = 10.dp),
-                    verticalArrangement = Arrangement.spacedBy(10.dp)
-                ) {
-                    items(state.messages, key = { it.id }) { MessageBubble(it) }
+                    IconButton(onClick = vm::clearChat) {
+                        Icon(Icons.Default.Delete, contentDescription = "Clear chat")
+                    }
+                    IconButton(onClick = vm::openSettings) {
+                        Icon(Icons.Default.Settings, contentDescription = "Settings")
+                    }
                 }
+            )
+        }
+    ) { padding ->
+        Column(
+            modifier = Modifier
+                .background(backdrop)
+                .padding(padding)
+                .navigationBarsPadding()
+                .imePadding()
+                .fillMaxSize()
+        ) {
+            ModelSelector(
+                models = state.models,
+                selected = state.selectedModel,
+                onSelect = vm::selectModel
+            )
+            state.connectionError?.let { Banner(it, onDismiss = null) }
+            state.chatError?.let { Banner(it, onDismiss = vm::dismissChatError) }
 
-                Surface(
-                    color = Color(0xFF141B27),
-                    contentColor = MaterialTheme.colorScheme.onSurface,
-                    shape = RoundedCornerShape(26.dp),
+            LazyColumn(
+                state = listState,
+                modifier = Modifier
+                    .weight(1f)
+                    .fillMaxWidth(),
+                contentPadding = PaddingValues(horizontal = 14.dp, vertical = 10.dp),
+                verticalArrangement = Arrangement.spacedBy(10.dp)
+            ) {
+                items(state.messages, key = { it.id }) { MessageBubble(it) }
+            }
+
+            Surface(
+                color = Color(0xFF141C2B),
+                contentColor = MaterialTheme.colorScheme.onSurface,
+                shape = RoundedCornerShape(28.dp),
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 10.dp, vertical = 8.dp)
+                    .border(1.dp, Color(0xFF283650), RoundedCornerShape(28.dp))
+            ) {
+                Row(
                     modifier = Modifier
                         .fillMaxWidth()
-                        .padding(horizontal = 10.dp, vertical = 8.dp)
-                        .border(1.dp, Color(0xFF253147), RoundedCornerShape(26.dp))
+                        .padding(start = 14.dp, end = 6.dp, top = 4.dp, bottom = 4.dp),
+                    verticalAlignment = Alignment.CenterVertically
                 ) {
-                    Row(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .padding(start = 14.dp, end = 6.dp, top = 4.dp, bottom = 4.dp),
-                        verticalAlignment = Alignment.CenterVertically
-                    ) {
-                        OutlinedTextField(
-                            value = input,
-                            onValueChange = { input = it },
-                            modifier = Modifier.weight(1f),
-                            placeholder = {
-                                Text(
-                                    text = "Message",
-                                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                                )
-                            },
-                            maxLines = 5,
-                            colors = OutlinedTextFieldDefaults.colors(
-                                focusedBorderColor = Color.Transparent,
-                                unfocusedBorderColor = Color.Transparent,
-                                cursorColor = MaterialTheme.colorScheme.primary,
-                                focusedTextColor = MaterialTheme.colorScheme.onSurface,
-                                unfocusedTextColor = MaterialTheme.colorScheme.onSurface
+                    OutlinedTextField(
+                        value = input,
+                        onValueChange = { input = it },
+                        modifier = Modifier.weight(1f),
+                        placeholder = {
+                            Text(
+                                text = "Message",
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
                             )
+                        },
+                        maxLines = 5,
+                        colors = OutlinedTextFieldDefaults.colors(
+                            focusedBorderColor = Color.Transparent,
+                            unfocusedBorderColor = Color.Transparent,
+                            cursorColor = MaterialTheme.colorScheme.primary,
+                            focusedTextColor = MaterialTheme.colorScheme.onSurface,
+                            unfocusedTextColor = MaterialTheme.colorScheme.onSurface
                         )
+                    )
 
-                        Spacer(modifier = Modifier.width(6.dp))
+                    Spacer(modifier = Modifier.width(6.dp))
 
-                        if (state.streaming) {
-                            IconButton(
-                                onClick = vm::stopStreaming,
-                                modifier = Modifier
-                                    .size(40.dp)
-                                    .clip(CircleShape)
-                                    .background(Color(0xFF283449))
-                            ) {
-                                Icon(
-                                    Icons.Default.Close,
-                                    contentDescription = "Stop",
-                                    tint = MaterialTheme.colorScheme.onSurface
+                    if (state.streaming) {
+                        IconButton(
+                            onClick = vm::stopStreaming,
+                            modifier = Modifier
+                                .size(40.dp)
+                                .clip(CircleShape)
+                                .background(Color(0xFF2A364D))
+                        ) {
+                            Icon(
+                                Icons.Default.Close,
+                                contentDescription = "Stop",
+                                tint = MaterialTheme.colorScheme.onSurface
+                            )
+                        }
+                    } else {
+                        val canSend = input.isNotBlank()
+                        IconButton(
+                            onClick = { if (vm.sendMessage(input)) input = "" },
+                            enabled = canSend,
+                            modifier = Modifier
+                                .size(40.dp)
+                                .clip(CircleShape)
+                                .background(
+                                    if (canSend) MaterialTheme.colorScheme.primary
+                                    else Color(0xFF1C2536)
                                 )
-                            }
-                        } else {
-                            val canSend = input.isNotBlank()
-                            IconButton(
-                                onClick = { if (vm.sendMessage(input)) input = "" },
-                                enabled = canSend,
-                                modifier = Modifier
-                                    .size(40.dp)
-                                    .clip(CircleShape)
-                                    .background(
-                                        if (canSend) MaterialTheme.colorScheme.primary
-                                        else Color(0xFF1D2636)
-                                    )
-                            ) {
-                                Icon(
-                                    Icons.AutoMirrored.Filled.Send,
-                                    contentDescription = "Send",
-                                    tint = if (canSend) MaterialTheme.colorScheme.onPrimary
-                                    else MaterialTheme.colorScheme.onSurfaceVariant
-                                )
-                            }
+                        ) {
+                            Icon(
+                                Icons.AutoMirrored.Filled.Send,
+                                contentDescription = "Send",
+                                tint = if (canSend) MaterialTheme.colorScheme.onPrimary
+                                else MaterialTheme.colorScheme.onSurfaceVariant
+                            )
                         }
                     }
                 }
@@ -247,10 +222,10 @@ private fun ModelSelector(models: List<String>, selected: String?, onSelect: (St
     var expanded by rememberSaveable { mutableStateOf(false) }
     Box(Modifier.padding(horizontal = 12.dp, vertical = 6.dp)) {
         Surface(
-            color = Color(0xFF151C29),
+            color = Color(0xFF151E2E),
             contentColor = MaterialTheme.colorScheme.onSecondaryContainer,
             shape = RoundedCornerShape(999.dp),
-            modifier = Modifier.border(1.dp, Color(0xFF27344A), RoundedCornerShape(999.dp))
+            modifier = Modifier.border(1.dp, Color(0xFF2A3952), RoundedCornerShape(999.dp))
         ) {
             TextButton(
                 onClick = { expanded = true },
@@ -292,7 +267,7 @@ private fun ModelSelector(models: List<String>, selected: String?, onSelect: (St
 private fun Banner(message: String, onDismiss: (() -> Unit)?) {
     Surface(
         color = MaterialTheme.colorScheme.errorContainer,
-        shape = RoundedCornerShape(12.dp),
+        shape = RoundedCornerShape(14.dp),
         modifier = Modifier
             .fillMaxWidth()
             .padding(horizontal = 12.dp, vertical = 4.dp)
@@ -323,29 +298,29 @@ private fun MessageBubble(message: ChatMessage) {
     ) {
         Surface(
             color = if (isUser) MaterialTheme.colorScheme.primaryContainer
-            else MaterialTheme.colorScheme.surfaceVariant,
+            else Color(0xFF131926),
             contentColor = if (isUser) MaterialTheme.colorScheme.onPrimaryContainer
             else MaterialTheme.colorScheme.onSurface,
             shape = if (isUser) {
-                RoundedCornerShape(topStart = 18.dp, topEnd = 18.dp, bottomStart = 18.dp, bottomEnd = 5.dp)
+                RoundedCornerShape(topStart = 20.dp, topEnd = 20.dp, bottomStart = 20.dp, bottomEnd = 5.dp)
             } else {
-                RoundedCornerShape(16.dp)
+                RoundedCornerShape(18.dp)
             },
             modifier = Modifier
                 .widthIn(max = 320.dp)
                 .border(
                     width = 1.dp,
-                    color = if (isUser) Color(0xFF335280) else Color(0xFF222C3E),
+                    color = if (isUser) Color(0xFF36598A) else Color(0xFF232F46),
                     shape = if (isUser) {
-                        RoundedCornerShape(topStart = 18.dp, topEnd = 18.dp, bottomStart = 18.dp, bottomEnd = 5.dp)
+                        RoundedCornerShape(topStart = 20.dp, topEnd = 20.dp, bottomStart = 20.dp, bottomEnd = 5.dp)
                     } else {
-                        RoundedCornerShape(16.dp)
+                        RoundedCornerShape(18.dp)
                     }
                 )
         ) {
             Text(
                 text = message.content.ifEmpty { "…" },
-                modifier = Modifier.padding(horizontal = 14.dp, vertical = 10.dp),
+                modifier = Modifier.padding(horizontal = 15.dp, vertical = 11.dp),
                 style = MaterialTheme.typography.bodyMedium
             )
         }
