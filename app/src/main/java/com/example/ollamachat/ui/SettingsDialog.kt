@@ -12,12 +12,15 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
+import androidx.compose.material3.Card
+import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.RadioButton
+import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
@@ -29,13 +32,26 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.unit.dp
+import com.example.ollamachat.data.ModelInfo
+import com.example.ollamachat.data.formatByteSize
 
 @Composable
-fun SettingsDialog(state: UiState, vm: ChatViewModel) {
+fun SettingsDialog(
+    state: UiState,
+    vm: ChatViewModel,
+    modelInventory: List<ModelInfo> = emptyList(),
+    initialTtsUrl: String = "http://127.0.0.1:8020",
+    initialVoiceCloneEnabled: Boolean = false,
+    initialVoiceSample: String = "default",
+    onSaveTtsSettings: (url: String, enabled: Boolean, sample: String) -> Unit = { _, _, _ -> }
+) {
     var url by remember { mutableStateOf(state.baseUrl) }
     var urlError by remember { mutableStateOf<String?>(null) }
     var prompt by remember { mutableStateOf(state.systemPrompt) }
     var pullName by remember { mutableStateOf("") }
+    var ttsUrl by remember { mutableStateOf(initialTtsUrl) }
+    var voiceCloneEnabled by remember { mutableStateOf(initialVoiceCloneEnabled) }
+    var voiceSample by remember { mutableStateOf(initialVoiceSample) }
     val pull = state.pull
 
     AlertDialog(
@@ -45,7 +61,14 @@ fun SettingsDialog(state: UiState, vm: ChatViewModel) {
         textContentColor = MaterialTheme.colorScheme.onSurface,
         shape = RoundedCornerShape(24.dp),
         title = { Text("Settings") },
-        confirmButton = { TextButton(onClick = vm::closeSettings) { Text("Close") } },
+        confirmButton = {
+            TextButton(onClick = {
+                onSaveTtsSettings(ttsUrl.trim(), voiceCloneEnabled, voiceSample.trim())
+                vm.closeSettings()
+            }) {
+                Text("Close")
+            }
+        },
         text = {
             Column(
                 modifier = Modifier.verticalScroll(rememberScrollState()),
@@ -60,7 +83,7 @@ fun SettingsDialog(state: UiState, vm: ChatViewModel) {
                     singleLine = true,
                     isError = urlError != null,
                     supportingText = {
-                        Text(urlError ?: "Use http://<HOST-IP>:11434 for a PC on your network.")
+                        Text(urlError ?: "Use http://127.0.0.1:11434 for local or http://<HOST-IP>:11434.")
                     },
                     modifier = Modifier.fillMaxWidth()
                 )
@@ -69,6 +92,47 @@ fun SettingsDialog(state: UiState, vm: ChatViewModel) {
                     if (urlError == null) url = vm.state.value.baseUrl
                 }) {
                     Text("Save & connect")
+                }
+
+                Text(
+                    "Local TTS & Voice Clone",
+                    style = MaterialTheme.typography.titleSmall,
+                    color = MaterialTheme.colorScheme.primary,
+                    modifier = Modifier.padding(top = 8.dp)
+                )
+                OutlinedTextField(
+                    value = ttsUrl,
+                    onValueChange = { ttsUrl = it },
+                    label = { Text("TTS Server URL") },
+                    placeholder = { Text("http://127.0.0.1:8020") },
+                    singleLine = true,
+                    modifier = Modifier.fillMaxWidth()
+                )
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.SpaceBetween
+                ) {
+                    Text("Voice Cloning / TTS", style = MaterialTheme.typography.bodyMedium)
+                    Switch(
+                        checked = voiceCloneEnabled,
+                        onCheckedChange = { checked ->
+                            voiceCloneEnabled = checked
+                            onSaveTtsSettings(ttsUrl.trim(), checked, voiceSample.trim())
+                        }
+                    )
+                }
+                OutlinedTextField(
+                    value = voiceSample,
+                    onValueChange = { voiceSample = it },
+                    label = { Text("Voice Sample / Preset") },
+                    singleLine = true,
+                    modifier = Modifier.fillMaxWidth()
+                )
+                OutlinedButton(onClick = {
+                    onSaveTtsSettings(ttsUrl.trim(), voiceCloneEnabled, voiceSample.trim())
+                }) {
+                    Text("Save TTS settings")
                 }
 
                 Text(
@@ -102,13 +166,35 @@ fun SettingsDialog(state: UiState, vm: ChatViewModel) {
                 state.connectionError?.let {
                     Text(it, color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodySmall)
                 }
-                state.models.forEach { name ->
-                    Row(
-                        Modifier.fillMaxWidth().clickable { vm.selectModel(name) },
-                        verticalAlignment = Alignment.CenterVertically
-                    ) {
-                        RadioButton(selected = name == state.selectedModel, onClick = { vm.selectModel(name) })
-                        Text(name, style = MaterialTheme.typography.bodyMedium)
+
+                if (modelInventory.isNotEmpty()) {
+                    modelInventory.forEach { info ->
+                        Row(
+                            Modifier.fillMaxWidth().clickable { vm.selectModel(info.name) },
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            RadioButton(
+                                selected = info.name == state.selectedModel,
+                                onClick = { vm.selectModel(info.name) }
+                            )
+                            Column(modifier = Modifier.weight(1f)) {
+                                Text(info.name, style = MaterialTheme.typography.bodyMedium)
+                                Text(
+                                    text = "${info.source.name} • Size: ${info.sizeLabel()} • Est. Mem: ${info.memoryLabel()}",
+                                    style = MaterialTheme.typography.bodySmall
+                                )
+                            }
+                        }
+                    }
+                } else {
+                    state.models.forEach { name ->
+                        Row(
+                            Modifier.fillMaxWidth().clickable { vm.selectModel(name) },
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            RadioButton(selected = name == state.selectedModel, onClick = { vm.selectModel(name) })
+                            Text(name, style = MaterialTheme.typography.bodyMedium)
+                        }
                     }
                 }
 
@@ -156,6 +242,22 @@ fun SettingsDialog(state: UiState, vm: ChatViewModel) {
                 }
                 pull.error?.let {
                     Text(it, color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodySmall)
+                }
+
+                // Bottom summary block so Settings doesn't leave dead space at the bottom
+                val totalDisk = remember(modelInventory) { modelInventory.sumOf { it.sizeBytes } }
+                val totalMem = remember(modelInventory) { modelInventory.sumOf { it.estimatedMemoryBytes } }
+                Card(
+                    modifier = Modifier.fillMaxWidth().padding(top = 8.dp),
+                    colors = CardDefaults.cardColors(containerColor = Color(0xFF1A2232))
+                ) {
+                    Column(modifier = Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                        Text("Local Runtime Status", style = MaterialTheme.typography.titleSmall)
+                        Text("Indexed Models: ${if (modelInventory.isNotEmpty()) modelInventory.size else state.models.size}", style = MaterialTheme.typography.bodySmall)
+                        Text("Total Disk Used: ${formatByteSize(totalDisk)}", style = MaterialTheme.typography.bodySmall)
+                        Text("Total Est. Memory: ${formatByteSize(totalMem)}", style = MaterialTheme.typography.bodySmall)
+                        Text("TTS Endpoint: $ttsUrl (${if (voiceCloneEnabled) "Clone ON" else "Clone OFF"})", style = MaterialTheme.typography.bodySmall)
+                    }
                 }
             }
         }
