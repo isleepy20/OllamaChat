@@ -13,7 +13,7 @@ import androidx.compose.ui.graphics.Color
 import com.example.ollamachat.ui.ChatScreen
 import com.example.ollamachat.ui.ChatViewModel
 
-private val AppThemeColorScheme = darkColorScheme(
+private val HybridAppColorScheme = darkColorScheme(
     primary = Color(0xFF8AB4F8),
     onPrimary = Color(0xFF072146),
     primaryContainer = Color(0xFF1B3458),
@@ -40,7 +40,7 @@ class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         setContent {
-            MaterialTheme(colorScheme = AppThemeColorScheme) {
+            MaterialTheme(colorScheme = HybridAppColorScheme) {
                 Surface(
                     modifier = Modifier.fillMaxSize(),
                     color = MaterialTheme.colorScheme.background
