@@ -2,12 +2,17 @@ package com.example.ollamachat.ui
 
 import android.content.ClipData
 import android.content.ClipboardManager
+import android.content.ContentValues
 import android.content.Context
 import android.content.Intent
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
+import android.media.MediaPlayer
 import android.net.Uri
 import android.net.wifi.WifiManager
+import android.os.Build
+import android.os.Environment
+import android.provider.MediaStore
 import android.provider.OpenableColumns
 import android.speech.tts.TextToSpeech
 import android.speech.tts.Voice
@@ -26,6 +31,7 @@ import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.defaultMinSize
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
@@ -47,6 +53,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.Send
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.ArrowDropDown
+import androidx.compose.material.icons.filled.AudioFile
 import androidx.compose.material.icons.filled.Bolt
 import androidx.compose.material.icons.filled.CameraAlt
 import androidx.compose.material.icons.filled.Check
@@ -55,6 +62,7 @@ import androidx.compose.material.icons.filled.ContentCopy
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Description
 import androidx.compose.material.icons.filled.Download
+import androidx.compose.material.icons.filled.FolderOpen
 import androidx.compose.material.icons.filled.FolderZip
 import androidx.compose.material.icons.filled.History
 import androidx.compose.material.icons.filled.Image
@@ -180,8 +188,11 @@ private data class StudioConfig(
     val singleHtmlAppMode: Boolean = false,
     val autoBundleZip: Boolean = true,
     val lineCheckpointTracker: Boolean = true,
-    val speechRate: Float = 1.0f,
-    val speechPitch: Float = 1.04f
+    val speechRate: Float = 0.95f,
+    val speechPitch: Float = 1.0f,
+    val preferredVoiceName: String = "",
+    val voiceServerUrl: String = "",
+    val voiceClipName: String = ""
 )
 
 private fun loadConfig(context: Context): StudioConfig {
@@ -199,8 +210,11 @@ private fun loadConfig(context: Context): StudioConfig {
         singleHtmlAppMode = prefs.getBoolean("single_html_app", false),
         autoBundleZip = prefs.getBoolean("auto_bundle_zip", true),
         lineCheckpointTracker = prefs.getBoolean("line_checkpoint", true),
-        speechRate = prefs.getFloat("speech_rate", 1.0f).coerceIn(0.6f, 1.6f),
-        speechPitch = prefs.getFloat("speech_pitch", 1.04f).coerceIn(0.75f, 1.30f)
+        speechRate = prefs.getFloat("speech_rate", 0.95f).coerceIn(0.6f, 1.6f),
+        speechPitch = prefs.getFloat("speech_pitch", 1.0f).coerceIn(0.75f, 1.30f),
+        preferredVoiceName = prefs.getString("preferred_voice_name", "") ?: "",
+        voiceServerUrl = prefs.getString("voice_server_url", "") ?: "",
+        voiceClipName = prefs.getString("voice_clip_name", "") ?: ""
     )
 }
 
@@ -220,6 +234,9 @@ private fun saveConfig(context: Context, cfg: StudioConfig) {
         .putBoolean("line_checkpoint", cfg.lineCheckpointTracker)
         .putFloat("speech_rate", cfg.speechRate)
         .putFloat("speech_pitch", cfg.speechPitch)
+        .putString("preferred_voice_name", cfg.preferredVoiceName)
+        .putString("voice_server_url", cfg.voiceServerUrl.trim())
+        .putString("voice_clip_name", cfg.voiceClipName.trim())
         .apply()
 }
 
@@ -296,6 +313,56 @@ private fun normalizeHost(raw: String): String {
         "http://$trimmed"
     }
     return if (Regex(":\\d+$").containsMatchIn(withScheme)) withScheme else "$withScheme:11434"
+}
+
+private fun normalizeVoiceServerEndpoint(raw: String): String {
+    val trimmed = raw.trim().removeSuffix("/")
+    val withScheme = if (trimmed.startsWith("http://") || trimmed.startsWith("https://")) {
+        trimmed
+    } else {
+        "http://$trimmed"
+    }
+    return if (withScheme.endsWith("/tts")) withScheme else "$withScheme/tts"
+}
+
+private suspend fun fetchClonedAudioFile(
+    context: Context,
+    serverUrl: String,
+    text: String,
+    voiceClipName: String
+): File = withContext(Dispatchers.IO) {
+    val endpoint = URL(normalizeVoiceServerEndpoint(serverUrl))
+    val payload = JSONObject().apply {
+        put("text", text.take(1500))
+        if (voiceClipName.isNotBlank()) {
+            put("ref_audio_name", voiceClipName)
+        }
+    }
+    val conn = (endpoint.openConnection() as HttpURLConnection).apply {
+        requestMethod = "POST"
+        doOutput = true
+        connectTimeout = 5000
+        readTimeout = 30000
+        setRequestProperty("Content-Type", "application/json")
+    }
+    try {
+        OutputStreamWriter(conn.outputStream).use { writer ->
+            writer.write(payload.toString())
+            writer.flush()
+        }
+        if (conn.responseCode !in 200..299) {
+            error("Voice server HTTP ${conn.responseCode}")
+        }
+        val outFile = File(context.cacheDir, "cloned_speech_${System.currentTimeMillis()}.wav")
+        conn.inputStream.use { input ->
+            FileOutputStream(outFile).use { output ->
+                input.copyTo(output)
+            }
+        }
+        outFile
+    } finally {
+        conn.disconnect()
+    }
 }
 
 private data class HostTelemetry(
@@ -455,6 +522,45 @@ private fun shareZipFile(context: Context, zipPath: String) {
     }
 }
 
+private fun saveZipDirectToDownloads(context: Context, sourceZipPath: String): String? {
+    val src = File(sourceZipPath)
+    if (!src.exists()) return null
+
+    return runCatching {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+            val values = ContentValues().apply {
+                put(MediaStore.Downloads.DISPLAY_NAME, src.name)
+                put(MediaStore.Downloads.MIME_TYPE, "application/zip")
+                put(MediaStore.Downloads.RELATIVE_PATH, Environment.DIRECTORY_DOWNLOADS)
+                put(MediaStore.Downloads.IS_PENDING, 1)
+            }
+            val resolver = context.contentResolver
+            val itemUri = resolver.insert(MediaStore.Downloads.EXTERNAL_CONTENT_URI, values)
+                ?: return@runCatching null
+            resolver.openOutputStream(itemUri)?.use { out ->
+                FileInputStream(src).use { input -> input.copyTo(out) }
+                out.flush()
+            } ?: run {
+                resolver.delete(itemUri, null, null)
+                return@runCatching null
+            }
+            values.clear()
+            values.put(MediaStore.Downloads.IS_PENDING, 0)
+            resolver.update(itemUri, values, null, null)
+            "${Environment.DIRECTORY_DOWNLOADS}/${src.name}"
+        } else {
+            @Suppress("DEPRECATION")
+            val downloadsDir = Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS)
+            downloadsDir.mkdirs()
+            val outFile = File(downloadsDir, src.name)
+            FileInputStream(src).use { input ->
+                FileOutputStream(outFile).use { output -> input.copyTo(output) }
+            }
+            outFile.absolutePath
+        }
+    }.getOrNull()
+}
+
 private fun copyZipToUri(context: Context, sourceZipPath: String, destinationUri: Uri): Boolean {
     return runCatching {
         val src = File(sourceZipPath)
@@ -469,18 +575,24 @@ private fun copyZipToUri(context: Context, sourceZipPath: String, destinationUri
     }.getOrDefault(false)
 }
 
-private fun inspectAttachment(context: Context, uri: Uri): AttachmentPreview {
-    var displayName = "attachment"
-    var sizeBytes = 0L
-    context.contentResolver.query(uri, arrayOf(OpenableColumns.DISPLAY_NAME, OpenableColumns.SIZE), null, null, null)
+private fun queryDisplayName(context: Context, uri: Uri): String? {
+    context.contentResolver.query(uri, arrayOf(OpenableColumns.DISPLAY_NAME), null, null, null)
         ?.use { cursor ->
             if (cursor.moveToFirst()) {
-                val nameIdx = cursor.getColumnIndex(OpenableColumns.DISPLAY_NAME)
+                val idx = cursor.getColumnIndex(OpenableColumns.DISPLAY_NAME)
+                if (idx >= 0) return cursor.getString(idx)
+            }
+        }
+    return null
+}
+
+private fun inspectAttachment(context: Context, uri: Uri): AttachmentPreview {
+    var displayName = queryDisplayName(context, uri) ?: "attachment"
+    var sizeBytes = 0L
+    context.contentResolver.query(uri, arrayOf(OpenableColumns.SIZE), null, null, null)
+        ?.use { cursor ->
+            if (cursor.moveToFirst()) {
                 val sizeIdx = cursor.getColumnIndex(OpenableColumns.SIZE)
-                if (nameIdx >= 0) {
-                    val n = cursor.getString(nameIdx)
-                    if (!n.isNullOrBlank()) displayName = n
-                }
                 if (sizeIdx >= 0 && !cursor.isNull(sizeIdx)) {
                     sizeBytes = cursor.getLong(sizeIdx)
                 }
@@ -625,22 +737,22 @@ private fun writeFilesAndOptionalZip(
     return summary to zipPath
 }
 
-private fun selectNaturalFemaleVoice(tts: TextToSpeech): Voice? {
-    val voices = runCatching { tts.voices }.getOrNull() ?: return null
-    val femaleHints = listOf(
-        "female", "woman", "en-us-x-sfg", "en-us-x-tpf", "en-us-x-iol",
-        "en-gb-x-gba", "en-gb-x-gbc", "natural"
-    )
-    return voices
+private fun availableEnglishVoices(tts: TextToSpeech): List<Voice> {
+    val all = runCatching { tts.voices }.getOrNull().orEmpty()
+    return all
         .filter { it.locale.language == Locale.ENGLISH.language }
-        .sortedByDescending { v ->
-            val nameLow = v.name.lowercase(Locale.ROOT)
-            val femaleScore = if (femaleHints.any { nameLow.contains(it) }) 10 else 0
-            val qualityScore = v.quality
-            val offlineBonus = if (!v.isNetworkConnectionRequired) 2 else 0
-            femaleScore + qualityScore + offlineBonus
-        }
-        .firstOrNull()
+        .sortedBy { it.name }
+}
+
+private fun resolveVoice(tts: TextToSpeech, preferredName: String): Voice? {
+    val voices = availableEnglishVoices(tts)
+    if (voices.isEmpty()) return null
+    if (preferredName.isNotBlank()) {
+        voices.firstOrNull { it.name == preferredName }?.let { return it }
+    }
+    return voices.firstOrNull { !it.isNetworkConnectionRequired && it.quality >= Voice.QUALITY_HIGH }
+        ?: voices.firstOrNull { !it.isNetworkConnectionRequired }
+        ?: voices.firstOrNull()
 }
 
 private fun formatLineCheckpoint(lineCount: Int): Int {
@@ -683,13 +795,14 @@ fun ChatScreen() {
     var historyOpen by remember { mutableStateOf(false) }
     var speakingMessageId by remember { mutableStateOf<String?>(null) }
 
+    val mediaPlayer = remember { MediaPlayer() }
     var ttsReady by remember { mutableStateOf(false) }
     val tts = remember {
         var instance: TextToSpeech? = null
         instance = TextToSpeech(context) { status ->
             if (status == TextToSpeech.SUCCESS) {
                 instance?.language = Locale.US
-                selectNaturalFemaleVoice(instance!!)?.let { instance?.voice = it }
+                resolveVoice(instance!!, config.preferredVoiceName)?.let { instance?.voice = it }
                 instance?.setSpeechRate(config.speechRate)
                 instance?.setPitch(config.speechPitch)
                 ttsReady = true
@@ -698,8 +811,21 @@ fun ChatScreen() {
         instance
     }
 
+    fun stopAllAudio() {
+        runCatching {
+            if (mediaPlayer.isPlaying) mediaPlayer.stop()
+            mediaPlayer.reset()
+        }
+        runCatching { tts.stop() }
+        speakingMessageId = null
+    }
+
     DisposableEffect(Unit) {
         onDispose {
+            runCatching {
+                if (mediaPlayer.isPlaying) mediaPlayer.stop()
+                mediaPlayer.release()
+            }
             runCatching {
                 tts.stop()
                 tts.shutdown()
@@ -726,8 +852,8 @@ fun ChatScreen() {
         if (destUri != null && srcPath != null) {
             val saved = copyZipToUri(context, srcPath, destUri)
             if (saved) {
-                statusNote = "Saved ZIP to selected folder"
-                Toast.makeText(context, "Saved ZIP to device storage", Toast.LENGTH_SHORT).show()
+                statusNote = "Saved ZIP to chosen folder"
+                Toast.makeText(context, "Saved ZIP to chosen folder", Toast.LENGTH_SHORT).show()
             } else {
                 bannerError = "Failed to write ZIP to selected storage location"
             }
@@ -809,6 +935,7 @@ fun ChatScreen() {
 
     fun startNewThread() {
         saveCurrentThreadSnapshot()
+        stopAllAudio()
         streamJob?.cancel()
         streaming = false
         userScrolledAway = false
@@ -820,6 +947,7 @@ fun ChatScreen() {
 
     fun openSavedThread(thread: SavedThread) {
         saveCurrentThreadSnapshot()
+        stopAllAudio()
         streamJob?.cancel()
         streaming = false
         userScrolledAway = false
@@ -1194,17 +1322,58 @@ fun ChatScreen() {
                             },
                             onToggleSpeak = {
                                 if (isSpeakingThis) {
-                                    tts.stop()
-                                    speakingMessageId = null
-                                } else if (ttsReady && msg.content.isNotBlank()) {
-                                    selectNaturalFemaleVoice(tts)?.let { tts.voice = it }
-                                    tts.setSpeechRate(config.speechRate)
-                                    tts.setPitch(config.speechPitch)
-                                    tts.speak(msg.content, TextToSpeech.QUEUE_FLUSH, null, msg.id)
-                                    speakingMessageId = msg.id
+                                    stopAllAudio()
+                                } else if (msg.content.isNotBlank()) {
+                                    stopAllAudio()
+                                    if (config.voiceServerUrl.isNotBlank()) {
+                                        speakingMessageId = msg.id
+                                        scope.launch {
+                                            runCatching {
+                                                fetchClonedAudioFile(
+                                                    context = context,
+                                                    serverUrl = config.voiceServerUrl,
+                                                    text = msg.content,
+                                                    voiceClipName = config.voiceClipName
+                                                )
+                                            }.onSuccess { wavFile ->
+                                                if (speakingMessageId == msg.id) {
+                                                    runCatching {
+                                                        mediaPlayer.reset()
+                                                        mediaPlayer.setDataSource(wavFile.absolutePath)
+                                                        mediaPlayer.setOnCompletionListener {
+                                                            speakingMessageId = null
+                                                        }
+                                                        mediaPlayer.prepare()
+                                                        mediaPlayer.start()
+                                                    }.onFailure {
+                                                        speakingMessageId = null
+                                                        bannerError = "Audio playback error: ${it.message}"
+                                                    }
+                                                }
+                                            }.onFailure { err ->
+                                                speakingMessageId = null
+                                                bannerError = "Voice server error: ${err.message}"
+                                            }
+                                        }
+                                    } else if (ttsReady) {
+                                        resolveVoice(tts, config.preferredVoiceName)?.let { tts.voice = it }
+                                        tts.setSpeechRate(config.speechRate)
+                                        tts.setPitch(config.speechPitch)
+                                        tts.speak(msg.content, TextToSpeech.QUEUE_FLUSH, null, msg.id)
+                                        speakingMessageId = msg.id
+                                    }
                                 }
                             },
-                            onSaveZipToStorage = { zipPath ->
+                            onDownloadZipToDownloads = { zipPath ->
+                                val savedLabel = saveZipDirectToDownloads(context, zipPath)
+                                if (savedLabel != null) {
+                                    statusNote = "Downloaded to $savedLabel"
+                                    Toast.makeText(context, "Saved to $savedLabel", Toast.LENGTH_SHORT).show()
+                                } else {
+                                    bannerError = "Could not write ZIP to Downloads"
+                                }
+                            },
+                            onSaveZipAs = { zipPath ->
                                 pendingZipExportPath = zipPath
                                 createZipDocLauncher.launch(File(zipPath).name)
                             },
@@ -1444,6 +1613,23 @@ fun ChatScreen() {
         var checkpointFlag by rememberSaveable { mutableStateOf(config.lineCheckpointTracker) }
         var rateVal by rememberSaveable { mutableStateOf(config.speechRate) }
         var pitchVal by rememberSaveable { mutableStateOf(config.speechPitch) }
+        var selectedVoiceDraft by rememberSaveable { mutableStateOf(config.preferredVoiceName) }
+        var voiceServerDraft by rememberSaveable { mutableStateOf(config.voiceServerUrl) }
+        var voiceClipDraft by rememberSaveable { mutableStateOf(config.voiceClipName) }
+        var voiceMenuOpen by rememberSaveable { mutableStateOf(false) }
+
+        val audioClipPicker = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
+            if (uri != null) {
+                val pickedName = queryDisplayName(context, uri)
+                    ?: uri.lastPathSegment?.substringAfterLast('/')
+                    ?: "reference_voice.wav"
+                voiceClipDraft = pickedName
+            }
+        }
+
+        val voicesList = remember(ttsReady, settingsOpen) {
+            if (ttsReady) availableEnglishVoices(tts) else emptyList()
+        }
 
         AlertDialog(
             onDismissRequest = { settingsOpen = false },
@@ -1627,25 +1813,111 @@ fun ChatScreen() {
 
                     HorizontalDivider()
 
+                    OutlinedTextField(
+                        value = voiceServerDraft,
+                        onValueChange = { voiceServerDraft = it },
+                        label = { Text("Voice Server URL (optional /tts)") },
+                        placeholder = { Text("Leave blank for Android TTS") },
+                        singleLine = true,
+                        modifier = Modifier.fillMaxWidth()
+                    )
+
+                    OutlinedTextField(
+                        value = voiceClipDraft,
+                        onValueChange = { voiceClipDraft = it },
+                        label = { Text("Reference Voice Clip Name") },
+                        placeholder = { Text("e.g. reference_voice.wav") },
+                        singleLine = true,
+                        modifier = Modifier.fillMaxWidth()
+                    )
+
+                    OutlinedButton(
+                        onClick = { audioClipPicker.launch(arrayOf("audio/*")) },
+                        modifier = Modifier.fillMaxWidth().defaultMinSize(minHeight = 48.dp)
+                    ) {
+                        Icon(Icons.Default.AudioFile, contentDescription = null)
+                        Spacer(modifier = Modifier.width(6.dp))
+                        Text("Pick Voice Clip File")
+                    }
+
                     Text(
-                        text = "Female Voice Speed: ${"%.1f".format(rateVal)}x",
+                        text = "Installed TTS Voice",
+                        style = MaterialTheme.typography.bodyMedium,
+                        fontWeight = FontWeight.Medium
+                    )
+                    Box {
+                        OutlinedButton(
+                            onClick = { voiceMenuOpen = true },
+                            modifier = Modifier.fillMaxWidth().defaultMinSize(minHeight = 48.dp)
+                        ) {
+                            Text(
+                                text = if (selectedVoiceDraft.isBlank()) "Auto (Best Installed English Voice)" else selectedVoiceDraft,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis,
+                                modifier = Modifier.weight(1f)
+                            )
+                            Icon(Icons.Default.ArrowDropDown, contentDescription = null)
+                        }
+                        DropdownMenu(expanded = voiceMenuOpen, onDismissRequest = { voiceMenuOpen = false }) {
+                            DropdownMenuItem(
+                                text = { Text("Auto (Best Installed English Voice)") },
+                                onClick = {
+                                    selectedVoiceDraft = ""
+                                    voiceMenuOpen = false
+                                }
+                            )
+                            voicesList.forEach { v ->
+                                DropdownMenuItem(
+                                    text = { Text("${v.name} (${v.locale})") },
+                                    onClick = {
+                                        selectedVoiceDraft = v.name
+                                        voiceMenuOpen = false
+                                    }
+                                )
+                            }
+                        }
+                    }
+
+                    Text(
+                        text = "Voice Speed: ${"%.2f".format(rateVal)}x",
                         style = MaterialTheme.typography.bodyMedium
                     )
                     Slider(
                         value = rateVal,
                         onValueChange = { rateVal = it },
-                        valueRange = 0.7f..1.5f
+                        valueRange = 0.75f..1.35f
                     )
 
                     Text(
-                        text = "Female Voice Pitch: ${"%.2f".format(pitchVal)}",
+                        text = "Voice Pitch: ${"%.2f".format(pitchVal)}",
                         style = MaterialTheme.typography.bodyMedium
                     )
                     Slider(
                         value = pitchVal,
                         onValueChange = { pitchVal = it },
-                        valueRange = 0.85f..1.25f
+                        valueRange = 0.85f..1.15f
                     )
+
+                    OutlinedButton(
+                        onClick = {
+                            if (ttsReady) {
+                                resolveVoice(tts, selectedVoiceDraft)?.let { tts.voice = it }
+                                tts.setSpeechRate(rateVal)
+                                tts.setPitch(pitchVal)
+                                tts.speak(
+                                    "Testing voice speed and pitch for calm, natural playback.",
+                                    TextToSpeech.QUEUE_FLUSH,
+                                    null,
+                                    "voice_preview"
+                                )
+                            }
+                        },
+                        modifier = Modifier.fillMaxWidth().defaultMinSize(minHeight = 48.dp)
+                    ) {
+                        Icon(Icons.Default.VolumeUp, contentDescription = null)
+                        Spacer(modifier = Modifier.width(6.dp))
+                        Text("Test Voice Sample")
+                    }
                 }
             },
             confirmButton = {
@@ -1667,9 +1939,17 @@ fun ChatScreen() {
                             autoBundleZip = zipFlag,
                             lineCheckpointTracker = checkpointFlag,
                             speechRate = rateVal,
-                            speechPitch = pitchVal
+                            speechPitch = pitchVal,
+                            preferredVoiceName = selectedVoiceDraft,
+                            voiceServerUrl = voiceServerDraft.trim(),
+                            voiceClipName = voiceClipDraft.trim()
                         )
                         saveConfig(context, config)
+                        if (ttsReady) {
+                            resolveVoice(tts, config.preferredVoiceName)?.let { tts.voice = it }
+                            tts.setSpeechRate(config.speechRate)
+                            tts.setPitch(config.speechPitch)
+                        }
                         settingsOpen = false
                         refreshModels()
                     },
@@ -1882,7 +2162,8 @@ private fun BubbleCard(
     isSpeaking: Boolean,
     onCopy: () -> Unit,
     onToggleSpeak: () -> Unit,
-    onSaveZipToStorage: (String) -> Unit,
+    onDownloadZipToDownloads: (String) -> Unit,
+    onSaveZipAs: (String) -> Unit,
     onShareZip: (String) -> Unit
 ) {
     val isUser = entry.role == "user"
@@ -1901,7 +2182,7 @@ private fun BubbleCard(
                 RoundedCornerShape(16.dp)
             },
             modifier = Modifier
-                .widthIn(max = 330.dp)
+                .widthIn(max = 340.dp)
                 .border(
                     width = 1.dp,
                     color = if (isUser) Color(0xFF33578A) else Color(0xFF3E2B25),
@@ -1912,7 +2193,7 @@ private fun BubbleCard(
                     }
                 )
         ) {
-            Column(modifier = Modifier.padding(horizontal = 15.dp, vertical = 11.dp)) {
+            Column(modifier = Modifier.padding(horizontal = 16.dp, vertical = 12.dp)) {
                 if (entry.attachmentName != null) {
                     Text(
                         text = if (entry.isAttachmentImage) "Photo: ${entry.attachmentName}" else "File: ${entry.attachmentName}",
@@ -1926,55 +2207,85 @@ private fun BubbleCard(
                     style = MaterialTheme.typography.bodyMedium
                 )
                 if (!isUser && entry.changeSummary != null) {
-                    Spacer(modifier = Modifier.height(8.dp))
+                    Spacer(modifier = Modifier.height(10.dp))
                     HorizontalDivider(color = Color(0xFF323746))
-                    Spacer(modifier = Modifier.height(6.dp))
+                    Spacer(modifier = Modifier.height(8.dp))
                     Text(
                         text = "What changed: ${entry.changeSummary}",
                         style = MaterialTheme.typography.labelSmall,
                         color = WarmPeach
                     )
                     if (entry.bundleZipPath != null) {
-                        Row(
-                            verticalAlignment = Alignment.CenterVertically,
-                            modifier = Modifier.padding(top = 6.dp)
+                        Spacer(modifier = Modifier.height(8.dp))
+                        Surface(
+                            color = Color(0xFF192234),
+                            shape = RoundedCornerShape(14.dp),
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .border(1.dp, Color(0xFF354B75), RoundedCornerShape(14.dp))
                         ) {
-                            Icon(
-                                Icons.Default.FolderZip,
-                                contentDescription = null,
-                                tint = SkyBlue,
-                                modifier = Modifier.size(15.dp)
-                            )
-                            Spacer(modifier = Modifier.width(5.dp))
-                            Text(
-                                text = File(entry.bundleZipPath).name,
-                                style = MaterialTheme.typography.labelSmall,
-                                color = SkyBlue,
-                                maxLines = 1,
-                                overflow = TextOverflow.Ellipsis,
-                                modifier = Modifier.weight(1f)
-                            )
-                        }
-                        Row(
-                            verticalAlignment = Alignment.CenterVertically,
-                            horizontalArrangement = Arrangement.spacedBy(8.dp),
-                            modifier = Modifier.padding(top = 2.dp)
-                        ) {
-                            TextButton(
-                                onClick = { onSaveZipToStorage(entry.bundleZipPath) },
-                                contentPadding = PaddingValues(horizontal = 6.dp, vertical = 0.dp)
-                            ) {
-                                Icon(Icons.Default.Download, contentDescription = null, modifier = Modifier.size(14.dp))
-                                Spacer(modifier = Modifier.width(4.dp))
-                                Text("Save ZIP", style = MaterialTheme.typography.labelSmall)
-                            }
-                            TextButton(
-                                onClick = { onShareZip(entry.bundleZipPath) },
-                                contentPadding = PaddingValues(horizontal = 6.dp, vertical = 0.dp)
-                            ) {
-                                Icon(Icons.Default.Share, contentDescription = null, modifier = Modifier.size(14.dp))
-                                Spacer(modifier = Modifier.width(4.dp))
-                                Text("Share", style = MaterialTheme.typography.labelSmall)
+                            Column(modifier = Modifier.padding(10.dp)) {
+                                Row(verticalAlignment = Alignment.CenterVertically) {
+                                    Icon(
+                                        Icons.Default.FolderZip,
+                                        contentDescription = null,
+                                        tint = SkyBlue,
+                                        modifier = Modifier.size(18.dp)
+                                    )
+                                    Spacer(modifier = Modifier.width(6.dp))
+                                    Text(
+                                        text = File(entry.bundleZipPath).name,
+                                        style = MaterialTheme.typography.bodySmall,
+                                        fontWeight = FontWeight.Medium,
+                                        color = SkyBlue,
+                                        maxLines = 1,
+                                        overflow = TextOverflow.Ellipsis
+                                    )
+                                }
+                                Spacer(modifier = Modifier.height(8.dp))
+                                Button(
+                                    onClick = { onDownloadZipToDownloads(entry.bundleZipPath) },
+                                    colors = ButtonDefaults.buttonColors(
+                                        containerColor = Terracotta,
+                                        contentColor = Color(0xFF140B07)
+                                    ),
+                                    shape = RoundedCornerShape(12.dp),
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .defaultMinSize(minHeight = 48.dp)
+                                ) {
+                                    Icon(Icons.Default.Download, contentDescription = null, modifier = Modifier.size(18.dp))
+                                    Spacer(modifier = Modifier.width(6.dp))
+                                    Text("Download to Downloads", fontWeight = FontWeight.SemiBold)
+                                }
+                                Spacer(modifier = Modifier.height(6.dp))
+                                Row(
+                                    modifier = Modifier.fillMaxWidth(),
+                                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                                ) {
+                                    OutlinedButton(
+                                        onClick = { onSaveZipAs(entry.bundleZipPath) },
+                                        shape = RoundedCornerShape(12.dp),
+                                        modifier = Modifier
+                                            .weight(1f)
+                                            .defaultMinSize(minHeight = 48.dp)
+                                    ) {
+                                        Icon(Icons.Default.FolderOpen, contentDescription = null, modifier = Modifier.size(16.dp))
+                                        Spacer(modifier = Modifier.width(4.dp))
+                                        Text("Save As")
+                                    }
+                                    OutlinedButton(
+                                        onClick = { onShareZip(entry.bundleZipPath) },
+                                        shape = RoundedCornerShape(12.dp),
+                                        modifier = Modifier
+                                            .weight(1f)
+                                            .defaultMinSize(minHeight = 48.dp)
+                                    ) {
+                                        Icon(Icons.Default.Share, contentDescription = null, modifier = Modifier.size(16.dp))
+                                        Spacer(modifier = Modifier.width(4.dp))
+                                        Text("Share")
+                                    }
+                                }
                             }
                         }
                     }
@@ -1984,30 +2295,33 @@ private fun BubbleCard(
 
         if (entry.content.isNotBlank()) {
             Row(
-                modifier = Modifier.padding(top = 2.dp, start = 4.dp, end = 4.dp),
+                modifier = Modifier.padding(top = 4.dp, start = 4.dp, end = 4.dp),
+                horizontalArrangement = Arrangement.spacedBy(6.dp),
                 verticalAlignment = Alignment.CenterVertically
             ) {
-                TextButton(
+                OutlinedButton(
                     onClick = onCopy,
-                    contentPadding = PaddingValues(horizontal = 8.dp, vertical = 0.dp)
+                    contentPadding = PaddingValues(horizontal = 14.dp, vertical = 8.dp),
+                    modifier = Modifier.defaultMinSize(minHeight = 44.dp)
                 ) {
-                    Icon(Icons.Default.ContentCopy, contentDescription = null, modifier = Modifier.size(14.dp))
-                    Spacer(modifier = Modifier.width(4.dp))
-                    Text("Copy", style = MaterialTheme.typography.labelSmall)
+                    Icon(Icons.Default.ContentCopy, contentDescription = null, modifier = Modifier.size(16.dp))
+                    Spacer(modifier = Modifier.width(6.dp))
+                    Text("Copy", style = MaterialTheme.typography.labelMedium)
                 }
-                TextButton(
+                OutlinedButton(
                     onClick = onToggleSpeak,
-                    contentPadding = PaddingValues(horizontal = 8.dp, vertical = 0.dp)
+                    contentPadding = PaddingValues(horizontal = 14.dp, vertical = 8.dp),
+                    modifier = Modifier.defaultMinSize(minHeight = 44.dp)
                 ) {
                     Icon(
                         if (isSpeaking) Icons.Default.VolumeOff else Icons.Default.VolumeUp,
                         contentDescription = null,
-                        modifier = Modifier.size(14.dp)
+                        modifier = Modifier.size(16.dp)
                     )
-                    Spacer(modifier = Modifier.width(4.dp))
+                    Spacer(modifier = Modifier.width(6.dp))
                     Text(
                         if (isSpeaking) "Stop TTS" else "Listen",
-                        style = MaterialTheme.typography.labelSmall
+                        style = MaterialTheme.typography.labelMedium
                     )
                 }
             }
